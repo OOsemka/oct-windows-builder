@@ -25,6 +25,7 @@ spec:
     stable: {}
     candidate: {}
   validatedOn:
+    - "4.21"
     - "4.22"
-  minOpenShift: "4.22"
-  # versions: omitted until :1.0.0-ocp4.22 is public for plugin and builder.
+  minOpenShift: "4.21"
+  # versions: omitted until :1.0.0-ocp4.21 and :1.0.0-ocp4.22 are public for plugin and builder.
