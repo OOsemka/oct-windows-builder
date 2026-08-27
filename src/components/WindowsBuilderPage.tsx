@@ -2,6 +2,7 @@ import {
   DocumentTitle,
   K8sResourceCommon,
   ListPageHeader,
+  useK8sModel,
   useK8sWatchResource,
 } from '@openshift-console/dynamic-plugin-sdk';
 import { useTranslation } from 'react-i18next';
@@ -31,7 +32,7 @@ import {
   TextInput,
 } from '@patternfly/react-core';
 import { Table, Thead, Tr, Th, Tbody, Td } from '@patternfly/react-table';
-import React, { FC, useCallback, useEffect, useMemo, useState } from 'react';
+import React, { Component, ErrorInfo, FC, ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
 
 import { recommendedAutounattend, WindowsSku } from '../utils/autounattend';
 import { builderHealth, BuildRecord, listBuilds, startBuild } from '../utils/builder-api';
@@ -50,6 +51,7 @@ import {
   dvStorageClass,
   getK8sErrorMessage,
   isDefaultStorageClass,
+  isDiscoveredModel,
   isForbiddenError,
   isMissingCrdError,
   isValidDiskName,
@@ -63,6 +65,24 @@ import './windows-builder.css';
 
 const I18N = 'plugin__oct-windows-builder';
 const LOG = 'WINDOWS_BUILDER';
+
+const DV_GVK = {
+  group: DataVolumeModel.apiGroup,
+  version: DataVolumeModel.apiVersion,
+  kind: DataVolumeModel.kind,
+};
+
+const TPL_GVK = {
+  group: TemplateModel.apiGroup,
+  version: TemplateModel.apiVersion,
+  kind: TemplateModel.kind,
+};
+
+const SC_GVK = {
+  group: StorageClassModel.apiGroup,
+  version: StorageClassModel.apiVersion,
+  kind: StorageClassModel.kind,
+};
 
 const statusLabelColor = (status: string): 'green' | 'red' | 'orange' | 'blue' | 'grey' => {
   switch (status) {
@@ -82,51 +102,91 @@ const statusLabelColor = (status: string): 'green' | 'red' | 'orange' | 'blue' |
   }
 };
 
-const WindowsBuilderPage: FC = () => {
+type ErrorBoundaryProps = {
+  children: ReactNode;
+  fallbackTitle: string;
+};
+
+type ErrorBoundaryState = { error: Error | null };
+
+class WindowsBuilderErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
+  state: ErrorBoundaryState = { error: null };
+
+  static getDerivedStateFromError(error: Error): ErrorBoundaryState {
+    return { error };
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo): void {
+    dashboardLogger.error(LOG, 'Windows Builder crashed', `${error.message} ${info.componentStack || ''}`);
+  }
+
+  render(): ReactNode {
+    if (this.state.error) {
+      return (
+        <PageSection>
+          <Alert variant="danger" isInline title={this.props.fallbackTitle}>
+            {this.state.error.message}
+          </Alert>
+        </PageSection>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+const WindowsBuilderPageInner: FC = () => {
   const { t } = useTranslation(I18N);
 
-  const [dvGolden, dvGoldenLoaded, dvGoldenErr] = useK8sWatchResource<K8sResourceCommon[]>({
-    groupVersionKind: {
-      group: DataVolumeModel.apiGroup,
-      version: DataVolumeModel.apiVersion,
-      kind: DataVolumeModel.kind,
-    },
-    isList: true,
-    namespaced: true,
-    namespace: GOLDEN_IMAGE_NAMESPACE,
-  });
+  const [dvModel, modelsInFlight] = useK8sModel(DV_GVK);
+  const [tplModel] = useK8sModel(TPL_GVK);
+  const [scModel] = useK8sModel(SC_GVK);
+  const hasDv = isDiscoveredModel(dvModel);
+  const hasTpl = isDiscoveredModel(tplModel);
+  const hasSc = isDiscoveredModel(scModel);
+  const tplMissing = !modelsInFlight && !hasTpl;
 
-  const [dvWork, dvWorkLoaded, dvWorkErr] = useK8sWatchResource<K8sResourceCommon[]>({
-    groupVersionKind: {
-      group: DataVolumeModel.apiGroup,
-      version: DataVolumeModel.apiVersion,
-      kind: DataVolumeModel.kind,
-    },
-    isList: true,
-    namespaced: true,
-    namespace: PLUGIN_NAMESPACE,
-  });
+  const [dvGolden, dvGoldenLoaded, dvGoldenErr] = useK8sWatchResource<K8sResourceCommon[]>(
+    hasDv
+      ? {
+          groupVersionKind: DV_GVK,
+          isList: true,
+          namespaced: true,
+          namespace: GOLDEN_IMAGE_NAMESPACE,
+        }
+      : null,
+  );
 
-  const [templates, templatesLoaded, templatesErr] = useK8sWatchResource<K8sResourceCommon[]>({
-    groupVersionKind: {
-      group: TemplateModel.apiGroup,
-      version: TemplateModel.apiVersion,
-      kind: TemplateModel.kind,
-    },
-    isList: true,
-    namespaced: true,
-    namespace: TEMPLATE_NAMESPACE,
-  });
+  const [dvWork, dvWorkLoaded, dvWorkErr] = useK8sWatchResource<K8sResourceCommon[]>(
+    hasDv
+      ? {
+          groupVersionKind: DV_GVK,
+          isList: true,
+          namespaced: true,
+          namespace: PLUGIN_NAMESPACE,
+        }
+      : null,
+  );
 
-  const [storageClasses, scLoaded] = useK8sWatchResource<K8sResourceCommon[]>({
-    groupVersionKind: {
-      group: StorageClassModel.apiGroup,
-      version: StorageClassModel.apiVersion,
-      kind: StorageClassModel.kind,
-    },
-    isList: true,
-    namespaced: false,
-  });
+  const [templates, templatesLoaded, templatesErr] = useK8sWatchResource<K8sResourceCommon[]>(
+    hasTpl
+      ? {
+          groupVersionKind: TPL_GVK,
+          isList: true,
+          namespaced: true,
+          namespace: TEMPLATE_NAMESPACE,
+        }
+      : null,
+  );
+
+  const [storageClasses, scLoaded] = useK8sWatchResource<K8sResourceCommon[]>(
+    hasSc
+      ? {
+          groupVersionKind: SC_GVK,
+          isList: true,
+          namespaced: false,
+        }
+      : null,
+  );
 
   const [sku, setSku] = useState<WindowsSku>('win2k19');
   const [customDisk, setCustomDisk] = useState('');
@@ -206,6 +266,10 @@ const WindowsBuilderPage: FC = () => {
     if (templateRef || windowsTemplates.length === 0) return;
     setTemplateRef(`${windowsTemplates[0].metadata.namespace || TEMPLATE_NAMESPACE}/${windowsTemplates[0].metadata.name}`);
   }, [windowsTemplates, templateRef]);
+
+  useEffect(() => {
+    if (tplMissing) setTemplateMode('custom');
+  }, [tplMissing]);
 
   const refreshBuilds = useCallback(async () => {
     try {
@@ -289,7 +353,8 @@ const WindowsBuilderPage: FC = () => {
 
   const dvErr = dvGoldenErr || dvWorkErr;
   const dvForbidden = isForbiddenError(dvErr);
-  const dvMissing = isMissingCrdError(dvErr);
+  const dvMissingCrd = isMissingCrdError(dvErr);
+  const cdiMissing = (!modelsInFlight && !hasDv) || dvMissingCrd;
   const tplForbidden = isForbiddenError(templatesErr);
   const existing = goldenDVs.some((d) => d.metadata.name === diskName && d.metadata.namespace === GOLDEN_IMAGE_NAMESPACE);
   const buildByDisk = useMemo(() => {
@@ -297,6 +362,9 @@ const WindowsBuilderPage: FC = () => {
     builds.forEach((b) => m.set(b.diskName, b));
     return m;
   }, [builds]);
+
+  const dvLoading = modelsInFlight || (hasDv && !dvGoldenLoaded && !dvWorkLoaded && !dvErr);
+  const canStart = !saving && !cdiMissing && Boolean(isoURL.trim()) && isValidDiskName(diskName);
 
   const goComputeHub = () => {
     window.location.href = '/community-tools/compute';
@@ -330,12 +398,17 @@ const WindowsBuilderPage: FC = () => {
               {t('Build sysprepped Windows disks for OpenShift Virtualization. Provide an ISO URL the cluster can pull. No Tekton.')}
             </p>
           </StackItem>
-          {dvMissing ? (
+          {cdiMissing ? (
             <StackItem>
               <Alert variant="danger" isInline title={t('CDI or KubeVirt is not installed (DataVolume API missing). OpenShift Virtualization is required.')} />
             </StackItem>
           ) : null}
-          {dvErr && !dvMissing ? (
+          {tplMissing ? (
+            <StackItem>
+              <Alert variant="warning" isInline title={t('Templates API is not available. You can still enter a custom template name.')} />
+            </StackItem>
+          ) : null}
+          {dvErr && !dvMissingCrd ? (
             <StackItem>
               <Alert
                 variant="danger"
@@ -346,7 +419,7 @@ const WindowsBuilderPage: FC = () => {
               </Alert>
             </StackItem>
           ) : null}
-          {templatesErr && !isMissingCrdError(templatesErr) && !dvErr ? (
+          {templatesErr && !isMissingCrdError(templatesErr) && !tplMissing ? (
             <StackItem>
               <Alert variant="warning" isInline title={t('Could not load Templates.')}>
                 {getK8sErrorMessage(templatesErr)}
@@ -363,8 +436,10 @@ const WindowsBuilderPage: FC = () => {
             <Card>
               <CardTitle>{t('Golden images')}</CardTitle>
               <CardBody>
-                {!dvGoldenLoaded && !dvWorkLoaded && !dvErr ? (
+                {dvLoading ? (
                   <Spinner size="lg" aria-label={t('Loading')} />
+                ) : cdiMissing ? (
+                  <p>{t('No DataVolumes to show until OpenShift Virtualization (CDI) is installed.')}</p>
                 ) : goldenDVs.length === 0 ? (
                   <p>{t('No Windows DataVolumes yet. Start a build to create win2k19, win2k25, win11, or a custom name.')}</p>
                 ) : (
@@ -479,6 +554,7 @@ const WindowsBuilderPage: FC = () => {
                       label={t('Existing template')}
                       isChecked={templateMode === 'existing'}
                       onChange={() => setTemplateMode('existing')}
+                      isDisabled={tplMissing}
                     />
                     <Radio
                       id="wb-tpl-custom"
@@ -488,14 +564,14 @@ const WindowsBuilderPage: FC = () => {
                       onChange={() => setTemplateMode('custom')}
                     />
                   </FormGroup>
-                  {templateMode === 'existing' ? (
+                  {templateMode === 'existing' && !tplMissing ? (
                     <FormGroup label={t('Template')} fieldId="wb-tpl">
                       <FormSelect
                         id="wb-tpl"
                         value={templateRef}
                         onChange={(_e, v) => setTemplateRef(v)}
                         aria-label={t('Template')}
-                        isDisabled={windowsTemplates.length === 0}
+                        isDisabled={windowsTemplates.length === 0 || !templatesLoaded}
                       >
                         {windowsTemplates.length === 0 ? (
                           <FormSelectOption value="" label={t('No Windows Templates found. You can still type a custom template name.')} />
@@ -604,7 +680,7 @@ const WindowsBuilderPage: FC = () => {
                     <Button
                       variant="primary"
                       type="submit"
-                      isDisabled={saving || !isoURL.trim() || !isValidDiskName(diskName)}
+                      isDisabled={!canStart}
                       isLoading={saving}
                     >
                       {t('Start build')}
@@ -617,6 +693,15 @@ const WindowsBuilderPage: FC = () => {
         </Stack>
       </PageSection>
     </>
+  );
+};
+
+const WindowsBuilderPage: FC = () => {
+  const { t } = useTranslation(I18N);
+  return (
+    <WindowsBuilderErrorBoundary fallbackTitle={t('Windows Builder could not load.')}>
+      <WindowsBuilderPageInner />
+    </WindowsBuilderErrorBoundary>
   );
 };
 

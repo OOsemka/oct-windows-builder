@@ -111,22 +111,36 @@ export type TemplateKind = {
   objects?: unknown[];
 };
 
+type K8sErrShape = {
+  message?: string;
+  json?: { message?: string; code?: number };
+  status?: number;
+  code?: number;
+};
+
+function asK8sErr(err: unknown): K8sErrShape | undefined {
+  if (err == null || typeof err !== 'object') {
+    return undefined;
+  }
+  return err as K8sErrShape;
+}
+
 export function getK8sErrorMessage(err: unknown): string {
-  if (!err) return '';
+  if (err == null) return '';
   if (typeof err === 'string') return err;
-  const obj = err as {
-    message?: string;
-    json?: { message?: string };
-  };
+  const obj = asK8sErr(err);
+  if (!obj) return String(err);
   return obj.json?.message || obj.message || String(err);
 }
 
 export function getK8sErrorCode(err: unknown): number | undefined {
-  const obj = err as { json?: { code?: number }; status?: number; code?: number };
+  const obj = asK8sErr(err);
+  if (!obj) return undefined;
   return obj.json?.code ?? obj.status ?? obj.code;
 }
 
 export function isForbiddenError(err: unknown): boolean {
+  if (err == null) return false;
   const code = getK8sErrorCode(err);
   if (code === 403) return true;
   const msg = getK8sErrorMessage(err).toLowerCase();
@@ -134,14 +148,29 @@ export function isForbiddenError(err: unknown): boolean {
 }
 
 export function isMissingCrdError(err: unknown): boolean {
+  if (err == null) return false;
   const code = getK8sErrorCode(err);
   if (code === 404) return true;
   const msg = getK8sErrorMessage(err).toLowerCase();
   return (
     msg.includes('could not find the requested resource') ||
     msg.includes('no matches for kind') ||
-    msg.includes('the server could not find the requested resource')
+    msg.includes('the server could not find the requested resource') ||
+    msg.includes('model does not exist')
   );
+}
+
+/** True when the Console SDK has a discovered model (CRD installed). */
+export function isDiscoveredModel(model: unknown): boolean {
+  if (model == null) return false;
+  if (typeof model !== 'object') return false;
+  const rec = model as { kind?: string; get?: (k: string) => unknown };
+  if (typeof rec.kind === 'string' && rec.kind.length > 0) return true;
+  if (typeof rec.get === 'function') {
+    const kind = rec.get('kind');
+    return typeof kind === 'string' && kind.length > 0;
+  }
+  return true;
 }
 
 const DNS1123 = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/;
