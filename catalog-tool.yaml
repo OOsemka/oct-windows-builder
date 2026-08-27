@@ -28,4 +28,14 @@ spec:
     - "4.21"
     - "4.22"
   minOpenShift: "4.21"
-  # versions: omitted until :1.0.0-ocp4.21 and :1.0.0-ocp4.22 are public for plugin and builder.
+  versions:
+    - version: "1.0.0"
+      channel: stable
+      openshift: ["4.21"]
+      image: quay.io/cjanisze/oct-windows-builder:1.0.0-ocp4.21
+      gitRef: v1.0.0
+    - version: "1.0.0"
+      channel: stable
+      openshift: ["4.22"]
+      image: quay.io/cjanisze/oct-windows-builder:1.0.0-ocp4.22
+      gitRef: v1.0.0
