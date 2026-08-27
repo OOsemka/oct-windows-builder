@@ -1,0 +1,238 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: oct-windows-builder
+  labels:
+    app.kubernetes.io/part-of: oct-windows-builder
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: windows-builder
+  namespace: oct-windows-builder
+  labels:
+    app: windows-builder
+    app.kubernetes.io/part-of: oct-windows-builder
+---
+# Least privilege for golden-image builds. Not cluster-admin.
+# DVs/VMs/Templates/PVCs/ConfigMaps across namespaces (CNV golden images live
+# in openshift-virtualization-os-images; Templates typically in openshift).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: oct-windows-builder
+  labels:
+    app: windows-builder
+    app.kubernetes.io/part-of: oct-windows-builder
+rules:
+  - apiGroups: ["cdi.kubevirt.io"]
+    resources: ["datavolumes", "datasources"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["kubevirt.io"]
+    resources: ["virtualmachines", "virtualmachineinstances"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["template.openshift.io"]
+    resources: ["templates"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["configmaps", "persistentvolumeclaims"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["storage.k8s.io"]
+    resources: ["storageclasses"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: oct-windows-builder
+  labels:
+    app: windows-builder
+    app.kubernetes.io/part-of: oct-windows-builder
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: oct-windows-builder
+subjects:
+  - kind: ServiceAccount
+    name: windows-builder
+    namespace: oct-windows-builder
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: oct-windows-builder
+  namespace: oct-windows-builder
+  labels:
+    app: oct-windows-builder
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: oct-windows-builder
+  template:
+    metadata:
+      labels:
+        app: oct-windows-builder
+    spec:
+      containers:
+        - name: plugin
+          image: quay.io/cjanisze/oct-windows-builder:1.0.0-ocp4.22
+          ports:
+            - containerPort: 9443
+              protocol: TCP
+          volumeMounts:
+            - name: plugin-serving-cert
+              readOnly: true
+              mountPath: /var/serving-cert
+          resources:
+            requests:
+              cpu: 10m
+              memory: 50Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop: [ALL]
+      volumes:
+        - name: plugin-serving-cert
+          secret:
+            secretName: plugin-serving-cert
+            defaultMode: 420
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: oct-windows-builder
+  namespace: oct-windows-builder
+  labels:
+    app: oct-windows-builder
+  annotations:
+    service.beta.openshift.io/serving-cert-secret-name: plugin-serving-cert
+spec:
+  ports:
+    - name: 9443-tcp
+      protocol: TCP
+      port: 9443
+      targetPort: 9443
+  selector:
+    app: oct-windows-builder
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: windows-builder
+  namespace: oct-windows-builder
+  labels:
+    app: windows-builder
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: windows-builder
+  template:
+    metadata:
+      labels:
+        app: windows-builder
+    spec:
+      serviceAccountName: windows-builder
+      containers:
+        - name: windows-builder
+          image: quay.io/cjanisze/oct-windows-builder-builder:1.0.0-ocp4.22
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            # Product defaults (CNV), not lab names. Empty StorageClass = cluster default.
+            - name: GOLDEN_IMAGE_NAMESPACE
+              value: openshift-virtualization-os-images
+            - name: TEMPLATE_NAMESPACE
+              value: openshift
+          ports:
+            - containerPort: 8080
+              name: http
+            - containerPort: 8443
+              name: https
+          volumeMounts:
+            - name: tls
+              mountPath: /var/run/secrets/tls
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: "1"
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+            capabilities:
+              drop: [ALL]
+      volumes:
+        - name: tls
+          secret:
+            secretName: windows-builder-tls
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: windows-builder
+  namespace: oct-windows-builder
+  labels:
+    app: windows-builder
+  annotations:
+    service.beta.openshift.io/serving-cert-secret-name: windows-builder-tls
+spec:
+  ports:
+    - name: https
+      protocol: TCP
+      port: 8443
+      targetPort: 8443
+    - name: http
+      protocol: TCP
+      port: 8080
+      targetPort: 8080
+  selector:
+    app: windows-builder
+---
+apiVersion: console.openshift.io/v1
+kind: ConsolePlugin
+metadata:
+  name: oct-windows-builder
+spec:
+  displayName: Windows Builder (Community Tools)
+  backend:
+    type: Service
+    service:
+      name: oct-windows-builder
+      namespace: oct-windows-builder
+      port: 9443
+      basePath: /
+  proxy:
+    - alias: windows-builder
+      endpoint:
+        type: Service
+        service:
+          name: windows-builder
+          namespace: oct-windows-builder
+          port: 8443

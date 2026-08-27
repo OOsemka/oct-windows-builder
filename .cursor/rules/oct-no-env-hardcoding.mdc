@@ -1,0 +1,37 @@
+---
+description: Never hardcode cluster- or lab-specific values (StorageClass, network, domains)
+alwaysApply: true
+---
+
+# No environment-specific hardcoding
+
+OCT must run on **any** OpenShift cluster. Do not bake in values that exist only in one lab.
+
+## Never hardcode
+
+- StorageClass names (`odf-…`, `px-…`, lab Ceph pools)
+- Networks: CIDRs, VLANs, bond/bridge names, MTU, DNS, NTP, proxy, domain
+- Cluster API / console URLs, node names, lab hostnames
+- Lab-only Secret or ConfigMap names, extra namespaces, a CSI provisioner used as *the* class
+- Windows ISO URLs (Microsoft VLSC, lab HTTP, internal mirrors)
+
+## Do instead
+
+- Omit the field (cluster default), or **read** what the cluster already has
+- Use the value the admin chose in the form (ISO URL, StorageClass, virtio-win image)
+- Optional env/annotation override with an **empty** default — never a lab name as default
+- Match Kubernetes/OpenShift **API contracts** (e.g. `storageclass.kubernetes.io/is-default-class`)
+- Copy StorageClass from an existing DV in `openshift-virtualization-os-images` if present
+
+## Allowed (product identity, not a lab)
+
+Plugin IDs and namespaces we own (`oct-windows-builder`), CNV `openshift-virtualization-os-images`, Templates in `openshift`. README samples labeled as examples.
+
+```
+// BAD — one lab’s StorageClass or ISO
+storageClass = "odf-storagecluster-ceph-fast-pool-rbd"
+isoURL = "http://lab-http.example.local/en_windows.iso"
+
+// GOOD — cluster default, or the class / URL the user chose
+// omit storageClassName, or copy it from a live DV / StorageClass list
+```

@@ -1,0 +1,30 @@
+# Copy this document into oct-storefront catalog/community.yaml
+# ONLY list spec.versions[] after quay.io/<org>/oct-windows-builder:<semver>-ocp<major.minor>
+# and the matching builder image exist and are public for THAT minor.
+# Always publish both -ocp4.21 and -ocp4.22. Never list a (version, OpenShift minor)
+# row unless that exact tag is public.
+apiVersion: communitytools.io/v1alpha1
+kind: CommunityTool
+metadata:
+  name: oct-windows-builder
+spec:
+  displayName: Windows Builder
+  description: >-
+    Build sysprepped Windows disks for OpenShift Virtualization. Creates CDI
+    DataVolumes (win2k19, win2k25, win11, or a custom name) from an ISO you
+    provide. No Tekton. Community project, not officially supported by Red Hat.
+  category: compute
+  source: community
+  git: https://github.com/OOsemka/oct-windows-builder
+  consolePlugin: oct-windows-builder
+  href: /community-tools/compute/windows-builder
+  # Bundled storefront SVG (src/assets/tiles/). Not a URL. Original paperclip assistant, not Microsoft Clippy art.
+  icon: tiles/oct-windows-builder.svg
+  defaultChannel: stable
+  channels:
+    stable: {}
+    candidate: {}
+  validatedOn:
+    - "4.22"
+  minOpenShift: "4.22"
+  # versions: omitted until :1.0.0-ocp4.22 is public for plugin and builder.

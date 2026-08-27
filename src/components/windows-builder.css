@@ -1,0 +1,27 @@
+/* Windows Builder. Prefix: wb- */
+
+.wb-lead {
+  max-width: 52rem;
+  color: var(--pf-t--global--text--color--subtle, #6a6e73);
+}
+
+.wb-actions {
+  padding-top: var(--pf-t--global--spacer--md, 16px);
+}
+
+.wb-xml {
+  min-height: 16rem;
+  font-family: var(--pf-t--global--font--family--mono, monospace);
+  font-size: var(--pf-t--global--font--size--sm, 0.875rem);
+}
+
+.wb-xml textarea {
+  font-family: inherit;
+}
+
+.wb-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--pf-t--global--spacer--sm, 8px);
+}

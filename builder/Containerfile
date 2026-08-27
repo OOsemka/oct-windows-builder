@@ -1,0 +1,13 @@
+FROM golang:1.22-alpine AS builder
+
+WORKDIR /app
+COPY go.mod ./
+RUN go mod download
+COPY *.go ./
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o windows-builder .
+
+FROM gcr.io/distroless/static:nonroot
+COPY --from=builder /app/windows-builder /windows-builder
+USER nonroot:nonroot
+EXPOSE 8080 8443
+ENTRYPOINT ["/windows-builder"]
