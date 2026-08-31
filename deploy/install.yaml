@@ -57,6 +57,43 @@ subjects:
     name: windows-builder
     namespace: oct-windows-builder
 ---
+# Jobs patch the ISO PVC in this namespace (El Torito noprompt). Not cluster-admin.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: oct-windows-builder
+  namespace: oct-windows-builder
+  labels:
+    app: windows-builder
+    app.kubernetes.io/part-of: oct-windows-builder
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: oct-windows-builder
+  namespace: oct-windows-builder
+  labels:
+    app: windows-builder
+    app.kubernetes.io/part-of: oct-windows-builder
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: oct-windows-builder
+subjects:
+  - kind: ServiceAccount
+    name: windows-builder
+    namespace: oct-windows-builder
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -76,7 +113,7 @@ spec:
     spec:
       containers:
         - name: plugin
-          image: quay.io/cjanisze/oct-windows-builder:1.0.2-ocp4.22
+          image: quay.io/cjanisze/oct-windows-builder:1.0.3-ocp4.22
           ports:
             - containerPort: 9443
               protocol: TCP
@@ -142,12 +179,16 @@ spec:
       serviceAccountName: windows-builder
       containers:
         - name: windows-builder
-          image: quay.io/cjanisze/oct-windows-builder-builder:1.0.2-ocp4.22
+          image: quay.io/cjanisze/oct-windows-builder-builder:1.0.3-ocp4.22
           env:
             - name: POD_NAMESPACE
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.namespace
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
             # Product defaults (CNV), not lab names. Empty StorageClass = cluster default.
             - name: GOLDEN_IMAGE_NAMESPACE
               value: openshift-virtualization-os-images

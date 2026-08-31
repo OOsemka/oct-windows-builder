@@ -9,8 +9,8 @@ This repository is the **Windows Builder** ConsolePlugin. It is **not** the OCT 
 | | Value |
 | --- | --- |
 | Plugin ID / ConsolePlugin / `package.json` `consolePlugin.name` | **`oct-windows-builder`** |
-| Image | `quay.io/<org>/oct-windows-builder:1.0.2-ocp4.22` (and `:1.0.2-ocp4.21`; `<semver>-ocp<major.minor>`) |
-| Builder image | `quay.io/<org>/oct-windows-builder-builder:1.0.2-ocp4.22` (and `:1.0.2-ocp4.21`) |
+| Image | `quay.io/<org>/oct-windows-builder:1.0.3-ocp4.22` (and `:1.0.3-ocp4.21`; `<semver>-ocp<major.minor>`) |
+| Builder image | `quay.io/<org>/oct-windows-builder-builder:1.0.3-ocp4.22` (and `:1.0.3-ocp4.21`) |
 | i18n | `plugin__oct-windows-builder` |
 | Route | `/community-tools/compute/windows-builder` |
 | Proxy | `/api/proxy/plugin/oct-windows-builder/windows-builder` |
@@ -48,7 +48,7 @@ Do **not** mark a DataVolume Ready unless CDI `status.phase` is `Succeeded`.
 
 ## OpenShift and extension versions
 
-Two axes in the catalog: git tag **`v1.x.x`** (semver) and optional branch **`ocp-X.Y`** when PatternFly or APIs diverge. Image tags **always** `<semver>-ocp<major.minor>` (e.g. `1.0.2-ocp4.22`).
+Two axes in the catalog: git tag **`v1.x.x`** (semver) and optional branch **`ocp-X.Y`** when PatternFly or APIs diverge. Image tags **always** `<semver>-ocp<major.minor>` (e.g. `1.0.3-ocp4.22`).
 
 - Git: `main` tracks the newest supported minor (currently **4.22**).
 - PatternFly 6 on 4.22; do not mix PF majors on one branch.
@@ -68,7 +68,7 @@ Allowed product identity: plugin ID/namespace `oct-windows-builder`, CNV namespa
 
 ## Builder RBAC (not cluster-admin)
 
-The builder ServiceAccount can get/list/watch/create/update/patch/delete DataVolumes, DataSources, VirtualMachines, VirtualMachineInstances, ConfigMaps, and PersistentVolumeClaims; get/list/watch/create/update/patch Templates; get/list StorageClasses. It cannot manage unrelated cluster-scoped resources. Document this in README. Do not log BMC passwords, ISO URL userinfo, Autounattend passwords, or kube tokens.
+The builder ServiceAccount can get/list/watch/create/update/patch/delete DataVolumes, DataSources, VirtualMachines, VirtualMachineInstances, ConfigMaps, and PersistentVolumeClaims; get/list/watch/create/update/patch Templates; get/list StorageClasses; and in `oct-windows-builder` create Jobs/read pods (ISO El Torito patch). It cannot manage unrelated cluster-scoped resources. Document this in README. Do not log BMC passwords, ISO URL userinfo, Autounattend passwords, or kube tokens.
 
 ## Catalog tile
 

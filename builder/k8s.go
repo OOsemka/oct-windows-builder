@@ -53,6 +53,14 @@ func (c *K8sClient) token() (string, error) {
 }
 
 func (c *K8sClient) request(method, path string, body interface{}) ([]byte, int, error) {
+	ct := ""
+	if body != nil {
+		ct = "application/json"
+	}
+	return c.do(method, path, ct, body)
+}
+
+func (c *K8sClient) do(method, path, contentType string, body interface{}) ([]byte, int, error) {
 	var bodyReader io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)
@@ -70,8 +78,8 @@ func (c *K8sClient) request(method, path string, body interface{}) ([]byte, int,
 		return nil, 0, fmt.Errorf("read SA token: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+tok)
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
 	}
 	resp, err := c.client.Do(req)
 	if err != nil {
@@ -80,6 +88,21 @@ func (c *K8sClient) request(method, path string, body interface{}) ([]byte, int,
 	defer resp.Body.Close()
 	respData, err := io.ReadAll(resp.Body)
 	return respData, resp.StatusCode, err
+}
+
+func (c *K8sClient) GetBytes(path string) ([]byte, int, error) {
+	return c.request(http.MethodGet, path, nil)
+}
+
+func (c *K8sClient) Patch(path string, body interface{}) error {
+	data, code, err := c.do(http.MethodPatch, path, "application/merge-patch+json", body)
+	if err != nil {
+		return err
+	}
+	if code < 200 || code >= 300 {
+		return fmt.Errorf("PATCH %s → %d: %s", path, code, truncate(string(data), 300))
+	}
+	return nil
 }
 
 func (c *K8sClient) Get(path string) (map[string]interface{}, int, error) {

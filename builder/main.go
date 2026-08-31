@@ -6,6 +6,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -14,7 +15,15 @@ func main() {
 	httpsPort := flag.String("https-port", "8443", "HTTPS port for TLS serving")
 	tlsCert := flag.String("tls-cert", "/var/run/secrets/tls/tls.crt", "Path to TLS certificate")
 	tlsKey := flag.String("tls-key", "/var/run/secrets/tls/tls.key", "Path to TLS key")
+	modifyISO := flag.String("modify-iso", "", "Patch a mounted Windows ISO for unattended EFI (El Torito noprompt) and exit")
 	flag.Parse()
+
+	if strings.TrimSpace(*modifyISO) != "" {
+		if err := patchISONoprompt(*modifyISO); err != nil {
+			log.Fatalf("modify-iso: %v", err)
+		}
+		return
+	}
 
 	workNS := envOr("POD_NAMESPACE", "oct-windows-builder")
 	goldenNS := envOr("GOLDEN_IMAGE_NAMESPACE", "openshift-virtualization-os-images")

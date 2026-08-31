@@ -238,6 +238,18 @@ func (m *Manager) run(req StartBuildRequest) {
 		return
 	}
 
+	m.set(disk, StatusPending, "Releasing install VM so the ISO can be patched")
+	if err := m.deleteInstallVM(installName); err != nil {
+		m.set(disk, StatusError, err.Error())
+		return
+	}
+
+	m.set(disk, StatusPending, "Patching ISO for unattended EFI boot (no Press any key)")
+	if err := m.patchISOForUnattendedEFI(isoName); err != nil {
+		m.set(disk, StatusError, "ISO El Torito patch: "+err.Error())
+		return
+	}
+
 	m.set(disk, StatusPending, "Creating blank install disk")
 	if err := m.ensureBlankDataVolume(installName, req.DiskSize, req.StorageClassName); err != nil {
 		m.set(disk, StatusError, err.Error())
@@ -429,6 +441,15 @@ func (m *Manager) recreateDV(ns, name string, spec map[string]interface{}) error
 }
 
 func (m *Manager) ensureHTTPDataVolume(name, isoURL, size, sc string) error {
+	path := m.dvPath(m.workNS, name)
+	existing, code, err := m.k8s.Get(path)
+	if err != nil {
+		return err
+	}
+	if existing != nil && code != http.StatusNotFound && dvSucceeded(existing) && dvHTTPURL(existing) == isoURL {
+		logf("reusing ISO DataVolume %s", name)
+		return nil
+	}
 	return m.recreateDV(m.workNS, name, map[string]interface{}{
 		"source": map[string]interface{}{
 			"http": map[string]interface{}{"url": isoURL},
@@ -438,6 +459,15 @@ func (m *Manager) ensureHTTPDataVolume(name, isoURL, size, sc string) error {
 }
 
 func (m *Manager) ensureBlankDataVolume(name, size, sc string) error {
+	path := m.dvPath(m.workNS, name)
+	existing, code, err := m.k8s.Get(path)
+	if err != nil {
+		return err
+	}
+	if existing != nil && code != http.StatusNotFound && dvSucceeded(existing) {
+		logf("reusing blank install DataVolume %s", name)
+		return nil
+	}
 	return m.recreateDV(m.workNS, name, map[string]interface{}{
 		"source":  map[string]interface{}{"blank": map[string]interface{}{}},
 		"storage": storageSpec(size, sc),
@@ -467,18 +497,7 @@ func (m *Manager) ensureInstallVM(vmName, isoName, sysprepName string, req Start
 		time.Sleep(3 * time.Second)
 	}
 
-	disks := []interface{}{
-		map[string]interface{}{
-			"name":      "rootdisk",
-			"disk":      map[string]interface{}{"bus": "sata"},
-			"bootOrder": 2,
-		},
-		map[string]interface{}{
-			"name":      "installiso",
-			"cdrom":     map[string]interface{}{"bus": "sata"},
-			"bootOrder": 1,
-		},
-	}
+	disks := installVMDisks(req.VirtioImage)
 	volumes := []interface{}{
 		map[string]interface{}{
 			"name":       "rootdisk",
@@ -490,19 +509,11 @@ func (m *Manager) ensureInstallVM(vmName, isoName, sysprepName string, req Start
 		},
 	}
 	if strings.TrimSpace(req.VirtioImage) != "" {
-		disks = append(disks, map[string]interface{}{
-			"name":  "virtio",
-			"cdrom": map[string]interface{}{"bus": "sata"},
-		})
 		volumes = append(volumes, map[string]interface{}{
 			"name":          "virtio",
 			"containerDisk": map[string]interface{}{"image": req.VirtioImage},
 		})
 	}
-	disks = append(disks, map[string]interface{}{
-		"name":  "sysprep",
-		"cdrom": map[string]interface{}{"bus": "sata"},
-	})
 	volumes = append(volumes, map[string]interface{}{
 		"name":    "sysprep",
 		"sysprep": map[string]interface{}{"configMap": map[string]interface{}{"name": sysprepName}},
@@ -564,6 +575,34 @@ func (m *Manager) ensureInstallVM(vmName, isoName, sysprepName string, req Start
 	}
 	_, err = m.k8s.Create(fmt.Sprintf("/apis/kubevirt.io/v1/namespaces/%s/virtualmachines", m.workNS), vm)
 	return err
+}
+
+// installVMDisks matches kubevirt-tekton-tasks windows-efi-installer: empty
+// SATA disk bootOrder 1 (firmware skips until Setup writes Boot Manager),
+// ISO CD bootOrder 2 (noprompt El Torito). virtio/sysprep are not bootable.
+func installVMDisks(virtioImage string) []interface{} {
+	disks := []interface{}{
+		map[string]interface{}{
+			"name":      "rootdisk",
+			"disk":      map[string]interface{}{"bus": "sata"},
+			"bootOrder": 1,
+		},
+		map[string]interface{}{
+			"name":      "installiso",
+			"cdrom":     map[string]interface{}{"bus": "sata"},
+			"bootOrder": 2,
+		},
+	}
+	if strings.TrimSpace(virtioImage) != "" {
+		disks = append(disks, map[string]interface{}{
+			"name":  "virtio",
+			"cdrom": map[string]interface{}{"bus": "sata"},
+		})
+	}
+	return append(disks, map[string]interface{}{
+		"name":  "sysprep",
+		"cdrom": map[string]interface{}{"bus": "sata"},
+	})
 }
 
 func (m *Manager) ensureDataSource(ns, name string) error {
@@ -681,8 +720,8 @@ func windowsVMTemplate(ns, name, goldenNS, disk, size string) map[string]interfa
 			"name":      name,
 			"namespace": ns,
 			"labels": map[string]interface{}{
-				"template.kubevirt.io/type":     "vm",
-				"app.kubernetes.io/managed-by":  "oct-windows-builder",
+				"template.kubevirt.io/type":       "vm",
+				"app.kubernetes.io/managed-by":    "oct-windows-builder",
 				"os.template.kubevirt.io/" + disk: "true",
 			},
 			"annotations": map[string]interface{}{
