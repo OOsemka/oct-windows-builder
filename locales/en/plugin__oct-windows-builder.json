@@ -43,7 +43,7 @@
   "Autounattend.xml": "Autounattend.xml",
   "Use recommended for this version": "Use recommended for this version",
   "Recommended for this version": "Recommended for this version",
-  "Virtio drivers (viostor, NetKVM, Balloon), GPT/EFI, public KMS key, then sysprep /generalize /oobe /shutdown. Windows 11 also bypasses TPM/Secure Boot checks. Edit the temporary AutoLogon password.": "Virtio drivers (viostor, NetKVM, Balloon), GPT/EFI, public KMS key, then sysprep /generalize /oobe /shutdown. Windows 11 also bypasses TPM/Secure Boot checks. Edit the temporary AutoLogon password.",
+  "Virtio drivers (viostor, NetKVM, Balloon), GPT/EFI, public KMS key, then sysprep /generalize /oobe /shutdown. Windows 11 also bypasses TPM/Secure Boot checks. Edit the temporary AutoLogon password.": "Virtio drivers (viostor, NetKVM, Balloon), GPT/EFI, public KMS key, then sysprep /generalize /oobe /shutdown. Evaluation ISOs use /IMAGE/INDEX (4 for Server Datacenter Desktop Experience, 1 for client). Windows 11 also bypasses TPM/Secure Boot checks. Edit the temporary AutoLogon password.",
   "Golden DataVolume name comes from the template DATA_SOURCE_NAME parameter ({{name}}).": "Golden DataVolume name comes from the template DATA_SOURCE_NAME parameter ({{name}}).",
   "virtio-win containerDisk": "virtio-win containerDisk",
   "Optional. Pre-filled from an existing Windows Template when one lists a virtio-win image. The cluster must be able to pull it.": "Optional. Pre-filled from an existing Windows Template when one lists a virtio-win image. The cluster must be able to pull it.",

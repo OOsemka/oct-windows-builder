@@ -5,7 +5,7 @@
 Standalone OpenShift Console plugin that builds **sysprepped** Windows disks for OpenShift Virtualization. Golden **DataVolumes** use the name OpenShift templates expect (`DATA_SOURCE_NAME`: `win10`, `win11`, `win2k16`, `win2k19`, `win2k22`, `win2k25`, or a custom DNS-1123 name).
 
 - **Plugin ID:** `oct-windows-builder`
-- **Images:** `quay.io/<org>/oct-windows-builder:1.0.4-ocp4.22` / `:1.0.4-ocp4.21` and `quay.io/<org>/oct-windows-builder-builder:1.0.4-ocp4.22` / `:1.0.4-ocp4.21` (`<semver>-ocp<major.minor>`; same digest is OK)
+- **Images:** `quay.io/<org>/oct-windows-builder:1.0.5-ocp4.22` / `:1.0.5-ocp4.21` and `quay.io/<org>/oct-windows-builder-builder:1.0.5-ocp4.22` / `:1.0.5-ocp4.21` (`<semver>-ocp<major.minor>`; same digest is OK)
 - **Route:** `/community-tools/compute/windows-builder` (Community Tools → **Compute**)
 - **Git branch:** `main` / optional `ocp-4.22` when PF/API differ
 
@@ -51,7 +51,7 @@ cd builder && go test ./... && go build -o windows-builder .
 
 ## Catalog
 
-After **public** combined tags exist for **both** OpenShift minors (`:1.0.4-ocp4.22` and `:1.0.4-ocp4.21` for the plugin and builder), open a PR against storefront `catalog/community.yaml` using [`catalog-tool.yaml`](catalog-tool.yaml) **including** `spec.versions[]`. Until then the Compute tile may exist without installable versions. Register `catalog/deploy/oct-windows-builder.yaml` in `BUNDLED_DEPLOY`. Always publish both minor tags. Never catalog a (version, OpenShift minor) row unless that exact tag is public.
+After **public** combined tags exist for **both** OpenShift minors (`:1.0.5-ocp4.22` and `:1.0.5-ocp4.21` for the plugin and builder), open a PR against storefront `catalog/community.yaml` using [`catalog-tool.yaml`](catalog-tool.yaml) **including** `spec.versions[]`. Until then the Compute tile may exist without installable versions. Register `catalog/deploy/oct-windows-builder.yaml` in `BUNDLED_DEPLOY`. Always publish both minor tags. Never catalog a (version, OpenShift minor) row unless that exact tag is public.
 
 ## Deploy
 
@@ -59,4 +59,4 @@ After **public** combined tags exist for **both** OpenShift minors (`:1.0.4-ocp4
 
 ## Still needed for a first real Windows guest
 
-See [`docs/install-job.md`](docs/install-job.md). Typical gaps: a cluster-pullable **virtio-win** containerDisk (or floppy), guest tools MSI on that ISO, TPM/Secure Boot for Windows 11, and a multi-edition ISO `/IMAGE/INDEX` the Autounattend editor does not guess.
+See [`docs/install-job.md`](docs/install-job.md). Typical gaps: a cluster-pullable **virtio-win** containerDisk (or floppy), guest tools MSI on that ISO, TPM/Secure Boot for Windows 11, and a retail ISO whose WIM index is not Evaluation Center’s (edit Autounattend `/IMAGE/INDEX`).

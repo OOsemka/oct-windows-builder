@@ -13,9 +13,30 @@ import { normalizeSkuKey } from './windows-skus';
  * - Win11 LabConfig + BypassNRO: install VM uses UEFI with Secure Boot off so virtio can load;
  *   TPM is enabled on the VM spec. BypassNRO:
  *   https://github.com/kubevirt/kubevirt-tekton-tasks (windows11-autounattend)
+ * - ImageInstall MetaData: /IMAGE/INDEX, /IMAGE/NAME, or /IMAGE/DESCRIPTION
+ *   https://learn.microsoft.com/en-us/windows-hardware/customize/desktop/unattend/microsoft-windows-setup-imageinstall-osimage-installfrom-metadata-key
+ *
+ * Evaluation Center install.wim names do not match retail “Datacenter Evaluation
+ * (Desktop Experience)” DESCRIPTION strings. /IMAGE/DESCRIPTION is the long WIM
+ * Description (“This option installs the full Windows graphical environment…”),
+ * not the Setup picker title. A mismatched DESCRIPTION plus WillShowUI=OnError
+ * yields an empty “No images are available” picker. Prefer /IMAGE/INDEX.
+ *
+ * Typical Microsoft Evaluation Center media (suggested ISO URLs in windows-skus.ts):
+ * - Server SERVER_EVAL ISOs (2k16/2k19/2k22/2k25): four images — 1 Standard Core,
+ *   2 Standard Desktop Experience, 3 Datacenter Core, 4 Datacenter Desktop Experience.
+ *   win2k19 ISO 17763.737…SERVER_EVAL_x64FRE (packer-windows Get-WindowsImage):
+ *     1 Windows Server 2019 Standard
+ *     2 Windows Server 2019 Standard (Desktop Experience)
+ *     3 Windows Server 2019 Datacenter
+ *     4 Windows Server 2019 Datacenter (Desktop Experience)
+ *   2019 display names omit “Evaluation”; 2016/2025 eval names often include it.
+ *   KubeVirt tekton windows2k22 uses /IMAGE/NAME Windows Server 2022 SERVERDATACENTER
+ *   (internal FLAGS); INDEX 4 is that Datacenter Desktop image on SERVER_EVAL media.
+ * - Client Enterprise Evaluation (Win10/11): usually a single image → INDEX 1.
  *
  * No Cloudbase-Init. FirstLogon ends with sysprep /generalize /oobe /shutdown.
- * Temporary AutoLogon password is a placeholder — never log it.
+ * Temporary AutoLogon password is a placeholder — never log it or product keys.
  */
 
 /** Public Microsoft KMS client setup keys (GVLKs), not secrets or MAKs. */
@@ -36,7 +57,8 @@ export type AutounattendProfile = {
   virtioFolders: string[];
   kmsKey: string;
   computerName: string;
-  imageDescription: string;
+  /** /IMAGE/INDEX for typical Evaluation Center media (see file comment). */
+  imageIndex: string;
   kind: SkuKind;
 };
 
@@ -75,26 +97,13 @@ function kmsKeyFor(skuId: string, kind: SkuKind): string {
   return KMS_PRO;
 }
 
-function imageDescriptionFor(skuId: string, kind: SkuKind): string {
-  const n = normalizeSkuKey(skuId);
-  switch (n) {
-    case 'win10':
-      return 'Windows 10 Enterprise';
-    case 'win11':
-      return 'Windows 11 Enterprise';
-    case 'win2k16':
-      return 'Windows Server 2016 Datacenter Evaluation';
-    case 'win2k19':
-      return 'Windows Server 2019 Datacenter Evaluation (Desktop Experience)';
-    case 'win2k22':
-      return 'Windows Server 2022 Datacenter Evaluation (Desktop Experience)';
-    case 'win2k25':
-      return 'Windows Server 2025 Datacenter Evaluation (Desktop Experience)';
-    default:
-      if (kind === 'client11') return 'Windows 11 Enterprise';
-      if (kind === 'client10') return 'Windows 10 Enterprise';
-      return '';
-  }
+/**
+ * /IMAGE/INDEX on typical Evaluation Center ISOs. Server 4-edition SERVER_EVAL
+ * media uses 4 for Datacenter Desktop Experience; single-image client eval uses 1.
+ */
+function imageIndexFor(_skuId: string, kind: SkuKind): string {
+  if (kind === 'server') return '4';
+  return '1';
 }
 
 function computerNameFor(skuId: string): string {
@@ -111,7 +120,7 @@ export function profileForSku(skuId: string): AutounattendProfile {
     virtioFolders: virtioFoldersForSku(id),
     kmsKey: kmsKeyFor(id, kind),
     computerName: computerNameFor(id),
-    imageDescription: imageDescriptionFor(id, kind),
+    imageIndex: imageIndexFor(id, kind),
     kind,
   };
 }
@@ -168,12 +177,12 @@ function win10PeCommands(): string {
 `;
 }
 
-function installFromXml(description: string): string {
-  if (!description) return '';
+function installFromXml(index: string): string {
+  if (!index) return '';
   return `          <InstallFrom>
             <MetaData wcm:action="add">
-              <Key>/IMAGE/DESCRIPTION</Key>
-              <Value>${description}</Value>
+              <Key>/IMAGE/INDEX</Key>
+              <Value>${index}</Value>
             </MetaData>
           </InstallFrom>
 `;
@@ -183,7 +192,7 @@ export function recommendedAutounattend(skuId: string): string {
   const p = profileForSku(skuId);
   const drivers = driverPathsXml(p.virtioFolders);
   const peExtra = p.kind === 'client11' ? win11PeCommands() : p.kind === 'client10' ? win10PeCommands() : '';
-  const installFrom = installFromXml(p.imageDescription);
+  const installFrom = installFromXml(p.imageIndex);
   return `<?xml version="1.0" encoding="utf-8"?>
 <unattend xmlns="urn:schemas-microsoft-com:unattend">
   <settings pass="windowsPE">
