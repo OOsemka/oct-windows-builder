@@ -42,3 +42,10 @@ func TestRedactAutounattend(t *testing.T) {
 		t.Fatal("expected redaction")
 	}
 }
+
+func TestSysprepAnswerFiles(t *testing.T) {
+	d := sysprepAnswerFiles("<unattend/>")
+	if d["autounattend.xml"] != "<unattend/>" || d["Autounattend.xml"] != "<unattend/>" || d["unattend.xml"] != "<unattend/>" {
+		t.Fatalf("%v", d)
+	}
+}

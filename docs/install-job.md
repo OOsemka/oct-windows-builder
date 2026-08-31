@@ -18,7 +18,7 @@ The form can override golden-image namespace and StorageClass. Empty StorageClas
 ## Resources created
 
 1. **ConfigMap** `wb-sysprep-<disk>`  
-   Keys `Autounattend.xml` and `unattend.xml`. Mounted with KubeVirt `volumes[].sysprep.configMap` (floppy that Windows Setup reads).
+   Keys `autounattend.xml`, `Autounattend.xml`, and `unattend.xml` (same XML). Mounted as a **SATA CD-ROM** from a ConfigMap volume (GitOps win2k19 layout), not a floppy and not `volumes[].sysprep`.
 
 2. **DataVolume** `wb-iso-<disk>`  
    `spec.source.http.url` = user ISO URL. Size default 12Gi. Wait until `Succeeded`.
@@ -31,7 +31,7 @@ The form can override golden-image namespace and StorageClass. Empty StorageClas
    - Disk: blank DV, **SATA**, **bootOrder 1** (empty at first; firmware skips it; after Setup, Windows Boot Manager wins on reboot)  
    - CD-ROM **bootOrder 2**: patched ISO DV  
    - Optional CD-ROM: virtio-win **containerDisk** (no bootOrder)  
-   - Sysprep ConfigMap (no bootOrder)  
+   - Answer-file ConfigMap CD-ROM (no bootOrder; keys `autounattend.xml` / `Autounattend.xml`)  
    - UEFI firmware (`secureBoot: false`); TPM enabled (needed for Windows 11)  
    - `runStrategy: RerunOnFailure`
 
@@ -52,25 +52,29 @@ The form can override golden-image namespace and StorageClass. Empty StorageClas
 
 Recommended XML (editable in the form; **Use recommended for this version**) is generated per OS family. Sources:
 
-- Microsoft KMS GVLKs: https://learn.microsoft.com/en-us/windows-server/get-started/kms-client-activation-keys
+- Working GitOps win2k19 (reference only, no Argo in this plugin): https://github.com/OOsemka/gitops-demo/tree/main/win2k19 — **no ProductKey**, ConfigMap CD `autounattend.xml`, `/IMAGE/INDEX` only
 - Answer files: https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/update-windows-settings-and-scripts-create-your-own-answer-file-sxs
-- KubeVirt sysprep volume: https://kubevirt.io/user-guide/user_workloads/startup_scripts/
-- virtio-win paths (`E:\viostor\<sku>\amd64`, NetKVM, Balloon): https://github.com/kubevirt/kubevirt-tekton-tasks (windows-efi-installer ConfigMaps) and https://kubevirt.io/2021/Automated-Windows-Installation-With-Tekton-Pipelines.html
+- KubeVirt ConfigMap CD: https://kubevirt.io/user-guide/user_workloads/startup_scripts/
+- virtio-win paths (`E:\viostor\<sku>\amd64`, NetKVM, Balloon): https://github.com/kubevirt/kubevirt-tekton-tasks (windows-efi-installer ConfigMaps)
 
 Per-SKU differences:
 
-| Family | virtio folder | Product key (GVLK) | `/IMAGE/INDEX` (eval media) | Extra |
+| Family | virtio folder | ProductKey | `/IMAGE/INDEX` (eval) | `/IMAGE/NAME` |
 | --- | --- | --- | --- | --- |
-| win10 | w10 | Enterprise | 1 (single-image Enterprise Evaluation) | BypassNRO |
-| win11 | w11 | Enterprise | 1 | LabConfig TPM/Secure Boot bypass + BypassNRO (install VM has TPM; Secure Boot off for virtio) |
-| win2k16 | 2k16 | Datacenter | 4 (Datacenter Desktop Experience on SERVER_EVAL) | |
-| win2k19 | 2k19 | Datacenter | 4 | Parsed from Chris’s SERVER_EVAL `install.wim`: index 4 NAME is `Windows Server 2019 SERVERDATACENTER`, DISPLAYNAME is `Windows Server 2019 Datacenter Evaluation (Desktop Experience)`. Do not put DISPLAYNAME in `/IMAGE/DESCRIPTION` — that field matches NAME on this media, so Setup shows “No images are available.” |
-| win2k22 | 2k22 | Datacenter | 4 | |
-| win2k25 | 2k25 then 2k22 fallback | Datacenter | 4 | 2025 eval names often include “Evaluation” |
+| win10 | w10 | omit (eval) | 1 | |
+| win11 | w11 | omit (eval) | 1 | LabConfig TPM/Secure Boot bypass + BypassNRO |
+| win2k16 | 2k16 | omit (eval) | 4 | `Windows Server 2016 SERVERDATACENTER` |
+| win2k19 | 2k19 | omit (eval) | 4 | `Windows Server 2019 SERVERDATACENTER` |
+| win2k22 | 2k22 | omit (eval) | 4 | `Windows Server 2022 SERVERDATACENTER` |
+| win2k25 | 2k25 then 2k22 fallback | omit (eval) | 4 | `Windows Server 2025 SERVERDATACENTER` |
 
-Microsoft Evaluation Center **SERVER_EVAL** ISOs (the suggested URLs) have four images: 1 Standard Core, 2 Standard Desktop, 3 Datacenter Core, 4 Datacenter Desktop Experience. Client eval is usually one image. KubeVirt tekton windows2k22 uses `/IMAGE/NAME` `Windows Server 2022 SERVERDATACENTER` (internal FLAGS); INDEX 4 is that edition on eval media. https://learn.microsoft.com/en-us/windows-hardware/customize/desktop/unattend/microsoft-windows-setup-imageinstall-osimage-installfrom-metadata-key
+A retail GVLK in UserData ProductKey makes Setup hide evaluation WIM images (“No images are available”). GitOps win2k19 and CNV windows2k22 omit the key. Retail volume media can add one from Microsoft’s KMS client list.
 
-All SKUs: GPT/EFI, specialize PnP, FirstLogon virtio MSI + qemu-ga, drop cached unattend, **sysprep /generalize /oobe /shutdown**. No Cloudbase-Init. `WillShowUI OnError` if the index is missing from that ISO.
+GitOps win2k19 used INDEX **2** (Standard Desktop) on the same four-image SERVER_EVAL WIM. Recommended XML uses INDEX **4** plus NAME `… SERVERDATACENTER` (Datacenter Desktop, CNV golden). Do not put DISPLAYNAME in `/IMAGE/DESCRIPTION`.
+
+Microsoft Evaluation Center **SERVER_EVAL** ISOs have four images: 1 Standard Core, 2 Standard Desktop, 3 Datacenter Core, 4 Datacenter Desktop Experience. Client eval is usually one image.
+
+All SKUs: GPT/EFI, specialize PnP, FirstLogon virtio MSI + qemu-ga, drop cached unattend, **sysprep /generalize /oobe /shutdown**. No Cloudbase-Init. `WillShowUI OnError` if ImageInstall cannot match the WIM.
 
 ## ISO URL suggestions
 
@@ -100,8 +104,8 @@ These are **not** faked as Ready:
 
 - **virtio-win containerDisk** — user must supply an image the cluster can pull (often `registry.redhat.io/container-native-virtualization/virtio-win`, which needs a pull secret). The form pre-fills from an existing Windows Template when one exists. Public `quay.io/kubevirt/virtio-container-disk` is not a full virtio-win ISO.
 - **Guest tools MSI** — `virtio-win-gt-x64.msi` and `qemu-ga` live on that CD; Autounattend tries to install them if present.
-- **Floppy vs CD** — KubeVirt `sysprep` volume is the floppy (`A:`). Some ISOs expect `Autounattend.xml` on a second CD instead; switch the VM spec if Setup ignores the floppy.
-- **Multi-edition ISO** — recommended XML uses `/IMAGE/INDEX` **4** on server eval media (Datacenter Desktop Experience) and **1** on typical client eval. Retail or custom WIMs may need a different index or `/IMAGE/NAME` (edit the form).
+- **Answer-file CD** — the ConfigMap is a SATA CD (GitOps win2k19), keys `autounattend.xml` and `Autounattend.xml`. EFI noprompt keeps the blank disk at bootOrder 1 (GitOps BIOS booted the ISO at order 1).
+- **Multi-edition ISO** — recommended XML uses `/IMAGE/INDEX` **4** plus `/IMAGE/NAME` `Windows Server YYYY SERVERDATACENTER` on server eval media. Retail or custom WIMs may need a different index (edit the form). Do not add a GVLK on SERVER_EVAL.
 - **Windows 11** — needs TPM (enabled) and often Secure Boot; Secure Boot is off by default so unsigned test drivers can load. Turn it on in Autounattend/VM if your ISO requires it.
 - **Replace golden DV** — deleting the old DV before the clone finishes would lose the previous image; the builder waits for the install disk first, then replaces. There is still a gap while the new clone runs.
 

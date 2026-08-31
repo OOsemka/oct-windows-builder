@@ -699,7 +699,7 @@ const WindowsBuilderPageInner: FC = () => {
                   <FormHelperText>
                     <HelperText>
                       <HelperTextItem>
-                        {t('Virtio drivers (viostor, NetKVM, Balloon), GPT/EFI, public KMS key, then sysprep /generalize /oobe /shutdown. Windows 11 also bypasses TPM/Secure Boot checks. Edit the temporary AutoLogon password.')}
+                        {t('Virtio drivers (viostor, NetKVM, Balloon), GPT/EFI, no ProductKey on Evaluation Center media, then sysprep /generalize /oobe /shutdown. Windows 11 also bypasses TPM/Secure Boot checks. Edit the temporary AutoLogon password.')}
                       </HelperTextItem>
                     </HelperText>
                   </FormHelperText>

@@ -381,13 +381,19 @@ func (m *Manager) ensureSysprepCM(name, xml string) error {
 				"app.kubernetes.io/part-of": "oct-windows-builder",
 			},
 		},
-		"data": map[string]interface{}{
-			"Autounattend.xml": xml,
-			"unattend.xml":     xml,
-		},
+		"data": sysprepAnswerFiles(xml),
 	}
 	_, err = m.k8s.Create(fmt.Sprintf("/api/v1/namespaces/%s/configmaps", m.workNS), cm)
 	return err
+}
+
+// GitOps win2k19 uses lowercase autounattend.xml on a ConfigMap CD.
+func sysprepAnswerFiles(xml string) map[string]interface{} {
+	return map[string]interface{}{
+		"autounattend.xml": xml,
+		"Autounattend.xml": xml,
+		"unattend.xml":     xml,
+	}
 }
 
 func storageSpec(size, storageClass string) map[string]interface{} {
@@ -514,9 +520,11 @@ func (m *Manager) ensureInstallVM(vmName, isoName, sysprepName string, req Start
 			"containerDisk": map[string]interface{}{"image": req.VirtioImage},
 		})
 	}
+	// GitOps win2k19 attaches the answer file as a ConfigMap CD-ROM (not
+	// volumes[].sysprep). Same ConfigMap; Setup reads autounattend.xml on that CD.
 	volumes = append(volumes, map[string]interface{}{
-		"name":    "sysprep",
-		"sysprep": map[string]interface{}{"configMap": map[string]interface{}{"name": sysprepName}},
+		"name":      "sysprep",
+		"configMap": map[string]interface{}{"name": sysprepName},
 	})
 
 	vm := map[string]interface{}{
@@ -577,9 +585,10 @@ func (m *Manager) ensureInstallVM(vmName, isoName, sysprepName string, req Start
 	return err
 }
 
-// installVMDisks matches kubevirt-tekton-tasks windows-efi-installer: empty
-// SATA disk bootOrder 1 (firmware skips until Setup writes Boot Manager),
-// ISO CD bootOrder 2 (noprompt El Torito). virtio/sysprep are not bootable.
+// installVMDisks: empty SATA disk bootOrder 1 (firmware skips until Setup
+// writes Boot Manager — required with EFI noprompt; GitOps BIOS used ISO
+// bootOrder 1 instead). ISO CD bootOrder 2. virtio/answer-file CDs are not bootable.
+// Answer file is a ConfigMap CD like GitOps win2k19 (not a floppy).
 func installVMDisks(virtioImage string) []interface{} {
 	disks := []interface{}{
 		map[string]interface{}{

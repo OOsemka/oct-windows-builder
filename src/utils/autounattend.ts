@@ -3,62 +3,57 @@ import { normalizeSkuKey } from './windows-skus';
 /**
  * Recommended Autounattend.xml for KubeVirt / OpenShift Virtualization golden images.
  *
- * Sources (not lab hosts):
- * - KMS GVLKs: https://learn.microsoft.com/en-us/windows-server/get-started/kms-client-activation-keys
+ * Working reference (no Argo CD / Tekton in this plugin):
+ * https://github.com/OOsemka/gitops-demo/tree/main/win2k19
+ * That tree’s Autounattend has **no ProductKey**, ImageInstall `/IMAGE/INDEX` only
+ * (they use 2 = Standard Desktop), and the answer file is a ConfigMap CD key
+ * `autounattend.xml` (not a KubeVirt sysprep volume). CNV windows-efi-installer
+ * windows2k22 also omits ProductKey and selects `/IMAGE/NAME`
+ * `Windows Server 2022 SERVERDATACENTER`.
+ *
+ * Other sources:
  * - Answer files: https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/update-windows-settings-and-scripts-create-your-own-answer-file-sxs
- * - KubeVirt sysprep volume: https://kubevirt.io/user-guide/user_workloads/startup_scripts/
+ * - KubeVirt sysprep / ConfigMap CD: https://kubevirt.io/user-guide/user_workloads/startup_scripts/
  * - virtio-win paths (viostor / NetKVM / Balloon, w10 w11 2k16–2k25):
  *   https://github.com/kubevirt/kubevirt-tekton-tasks (windows-efi-installer ConfigMaps)
- *   https://kubevirt.io/2021/Automated-Windows-Installation-With-Tekton-Pipelines.html
- * - Win11 LabConfig + BypassNRO: install VM uses UEFI with Secure Boot off so virtio can load;
- *   TPM is enabled on the VM spec. BypassNRO:
- *   https://github.com/kubevirt/kubevirt-tekton-tasks (windows11-autounattend)
- * - ImageInstall MetaData: /IMAGE/INDEX, /IMAGE/NAME, or /IMAGE/DESCRIPTION
+ * - Win11 LabConfig + BypassNRO
+ * - ImageInstall MetaData: /IMAGE/INDEX, /IMAGE/NAME
  *   https://learn.microsoft.com/en-us/windows-hardware/customize/desktop/unattend/microsoft-windows-setup-imageinstall-osimage-installfrom-metadata-key
  *
  * Evaluation Center install.wim **NAME** values are internal FLAGS strings
  * (`Windows Server 2019 SERVERDATACENTER`), not the Setup picker title.
- * `/IMAGE/DESCRIPTION` matches NAME on this media, not DISPLAYNAME. Feeding
- * DISPLAYNAME (or a retail title) as DESCRIPTION plus WillShowUI=OnError
- * yields an empty “No images are available” picker. Prefer `/IMAGE/INDEX`.
+ * `/IMAGE/DESCRIPTION` matches NAME on this media, not DISPLAYNAME.
  *
- * Typical Microsoft Evaluation Center media (suggested ISO URLs in windows-skus.ts):
- * - Server SERVER_EVAL ISOs (2k16/2k19/2k22/2k25): four images — 1 Standard Core,
- *   2 Standard Desktop Experience, 3 Datacenter Core, 4 Datacenter Desktop Experience.
- *   Chris’s win2k19 ISO 17763.737…SERVER_EVAL_x64FRE (parsed from install.wim XML):
- *     1 NAME SERVERSTANDARDCORE     DISPLAYNAME Windows Server 2019 Standard Evaluation
- *     2 NAME SERVERSTANDARD         DISPLAYNAME Windows Server 2019 Standard Evaluation (Desktop Experience)
- *     3 NAME SERVERDATACENTERCORE   DISPLAYNAME Windows Server 2019 Datacenter Evaluation
- *     4 NAME SERVERDATACENTER       DISPLAYNAME Windows Server 2019 Datacenter Evaluation (Desktop Experience)
- *   DISPLAYNAME includes “Evaluation”; `/IMAGE/NAME` is the SERVER* string.
- *   KubeVirt tekton windows2k22 uses `/IMAGE/NAME` Windows Server 2022 SERVERDATACENTER
- *   (same FLAGS); INDEX 4 is Datacenter Desktop on SERVER_EVAL media.
- * - Client Enterprise Evaluation (Win10/11): usually a single image → INDEX 1.
+ * Typical Microsoft Evaluation Center media:
+ * - Server SERVER_EVAL (2k16/2k19/2k22/2k25): four images — 1 Standard Core,
+ *   2 Standard Desktop, 3 Datacenter Core, 4 Datacenter Desktop Experience.
+ *   Chris’s win2k19 ISO (parsed from install.wim):
+ *     1 NAME Windows Server 2019 SERVERSTANDARDCORE
+ *     2 NAME Windows Server 2019 SERVERSTANDARD
+ *     3 NAME Windows Server 2019 SERVERDATACENTERCORE
+ *     4 NAME Windows Server 2019 SERVERDATACENTER
+ * - Client Enterprise Evaluation: usually a single image → INDEX 1.
+ *
+ * A volume GVLK in UserData ProductKey makes Setup hide evaluation images
+ * (“No images are available”, Next disabled) even when INDEX is correct.
+ * Recommended XML omits ProductKey (GitOps win2k19 / CNV 2k22). Retail
+ * volume media can add a key from:
+ * https://learn.microsoft.com/en-us/windows-server/get-started/kms-client-activation-keys
  *
  * No Cloudbase-Init. FirstLogon ends with sysprep /generalize /oobe /shutdown.
  * Temporary AutoLogon password is a placeholder — never log it or product keys.
  */
-
-/** Public Microsoft KMS client setup keys (GVLKs), not secrets or MAKs. */
-const KMS_DATACENTER: Record<string, string> = {
-  win2k16: 'CB7KF-BWN84-R7R2Y-793K2-8XDDG',
-  win2k19: 'WMDGN-G9PQG-XVVXX-R3X43-63DFG',
-  win2k22: 'WX4NM-KYWYW-QJJR4-XV3QB-6VM33',
-  win2k25: 'D764K-2NDRG-47T6Q-P8T8W-YP6DF',
-};
-
-const KMS_ENTERPRISE = 'NPPR9-FWDCX-D2C8J-H872K-2YT43';
-const KMS_PRO = 'W269N-WFGWX-YVC9B-4J6C9-T83GX';
 
 type SkuKind = 'client10' | 'client11' | 'server' | 'generic';
 
 export type AutounattendProfile = {
   skuId: string;
   virtioFolders: string[];
-  kmsKey: string;
   computerName: string;
-  /** /IMAGE/INDEX for typical Evaluation Center media (see file comment). */
+  /** /IMAGE/INDEX for typical Evaluation Center media. */
   imageIndex: string;
+  /** /IMAGE/NAME (WIM NAME / FLAGS), server SKUs only. */
+  imageName: string;
   kind: SkuKind;
 };
 
@@ -85,25 +80,25 @@ function skuKind(skuId: string): SkuKind {
   return 'generic';
 }
 
-function kmsKeyFor(skuId: string, kind: SkuKind): string {
-  const n = normalizeSkuKey(skuId);
-  if (kind === 'client10' || kind === 'client11') return KMS_ENTERPRISE;
-  if (KMS_DATACENTER[n]) return KMS_DATACENTER[n];
-  if (n.includes('2k25')) return KMS_DATACENTER.win2k25;
-  if (n.includes('2k22')) return KMS_DATACENTER.win2k22;
-  if (n.includes('2k19')) return KMS_DATACENTER.win2k19;
-  if (n.includes('2k16')) return KMS_DATACENTER.win2k16;
-  if (kind === 'server') return KMS_DATACENTER.win2k22;
-  return KMS_PRO;
-}
-
 /**
  * /IMAGE/INDEX on typical Evaluation Center ISOs. Server 4-edition SERVER_EVAL
- * media uses 4 for Datacenter Desktop Experience; single-image client eval uses 1.
+ * media uses 4 for Datacenter Desktop Experience (CNV Datacenter golden). GitOps
+ * win2k19 used 2 (Standard Desktop) on the same four-image WIM.
  */
 function imageIndexFor(_skuId: string, kind: SkuKind): string {
   if (kind === 'server') return '4';
   return '1';
+}
+
+/** WIM NAME (not DISPLAYNAME) for Datacenter Desktop on SERVER_EVAL media. */
+function imageNameFor(skuId: string, kind: SkuKind): string {
+  if (kind !== 'server') return '';
+  const n = normalizeSkuKey(skuId);
+  if (n.includes('2k25') || n.includes('2025')) return 'Windows Server 2025 SERVERDATACENTER';
+  if (n.includes('2k22') || n.includes('2022')) return 'Windows Server 2022 SERVERDATACENTER';
+  if (n.includes('2k19') || n.includes('2019')) return 'Windows Server 2019 SERVERDATACENTER';
+  if (n.includes('2k16') || n.includes('2016')) return 'Windows Server 2016 SERVERDATACENTER';
+  return '';
 }
 
 function computerNameFor(skuId: string): string {
@@ -118,9 +113,9 @@ export function profileForSku(skuId: string): AutounattendProfile {
   return {
     skuId: id,
     virtioFolders: virtioFoldersForSku(id),
-    kmsKey: kmsKeyFor(id, kind),
     computerName: computerNameFor(id),
     imageIndex: imageIndexFor(id, kind),
+    imageName: imageNameFor(id, kind),
     kind,
   };
 }
@@ -177,13 +172,23 @@ function win10PeCommands(): string {
 `;
 }
 
-function installFromXml(index: string): string {
-  if (!index) return '';
-  return `          <InstallFrom>
-            <MetaData wcm:action="add">
+function installFromXml(index: string, imageName: string): string {
+  const metas: string[] = [];
+  if (index) {
+    metas.push(`            <MetaData wcm:action="add">
               <Key>/IMAGE/INDEX</Key>
               <Value>${index}</Value>
-            </MetaData>
+            </MetaData>`);
+  }
+  if (imageName) {
+    metas.push(`            <MetaData wcm:action="add">
+              <Key>/IMAGE/NAME</Key>
+              <Value>${imageName}</Value>
+            </MetaData>`);
+  }
+  if (!metas.length) return '';
+  return `          <InstallFrom>
+${metas.join('\n')}
           </InstallFrom>
 `;
 }
@@ -192,7 +197,7 @@ export function recommendedAutounattend(skuId: string): string {
   const p = profileForSku(skuId);
   const drivers = driverPathsXml(p.virtioFolders);
   const peExtra = p.kind === 'client11' ? win11PeCommands() : p.kind === 'client10' ? win10PeCommands() : '';
-  const installFrom = installFromXml(p.imageIndex);
+  const installFrom = installFromXml(p.imageIndex, p.imageName);
   return `<?xml version="1.0" encoding="utf-8"?>
 <unattend xmlns="urn:schemas-microsoft-com:unattend">
   <settings pass="windowsPE">
@@ -268,10 +273,6 @@ ${installFrom}          <InstallTo>
         <AcceptEula>true</AcceptEula>
         <FullName>Administrator</FullName>
         <Organization></Organization>
-        <ProductKey>
-          <Key>${p.kmsKey}</Key>
-          <WillShowUI>OnError</WillShowUI>
-        </ProductKey>
       </UserData>
     </component>
   </settings>
@@ -300,7 +301,6 @@ ${drivers}
     </component>
     <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
       <ComputerName>${p.computerName}</ComputerName>
-      <ProductKey>${p.kmsKey}</ProductKey>
     </component>
     <component name="Microsoft-Windows-Security-SPP-UX" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
       <SkipAutoActivation>true</SkipAutoActivation>
