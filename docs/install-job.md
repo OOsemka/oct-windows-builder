@@ -27,7 +27,7 @@ The form can override golden-image namespace and StorageClass. Empty StorageClas
    `spec.source.blank`, size from the form (default 60Gi). Wait until `Succeeded` (blank bind).
 
 4. **VirtualMachine** `wb-install-<disk>`  
-   After the ISO DV succeeds, a Job patches El Torito in place (`efisys.bin` ← `efisys_noprompt.bin`) so UEFI does not wait for “Press any key to boot from CD or DVD” (same approach as kubevirt-tekton-tasks `windows-efi-installer` / `modify-windows-iso-file`). Then:  
+   After the ISO DV succeeds, a Job patches El Torito in place (`efisys.bin` ← `efisys_noprompt.bin`) so UEFI does not wait for “Press any key to boot from CD or DVD”. The walker finds `efi/microsoft/boot` case-insensitively on Joliet, ISO9660, then UDF (Windows eval ISOs are UDF 1.02 with an ISO9660 stub). Then:  
    - Disk: blank DV, **SATA**, **bootOrder 1** (empty at first; firmware skips it; after Setup, Windows Boot Manager wins on reboot)  
    - CD-ROM **bootOrder 2**: patched ISO DV  
    - Optional CD-ROM: virtio-win **containerDisk** (no bootOrder)  

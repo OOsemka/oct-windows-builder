@@ -36,10 +36,11 @@ type isoExtent struct {
 
 // patchISONoprompt rewrites a Windows install ISO so UEFI El Torito boots
 // without "Press any key to boot from CD or DVD". Microsoft ships both
-// efi/microsoft/boot/efisys.bin (prompt) and efisys_noprompt.bin (no prompt);
-// kubevirt-tekton-tasks windows-efi-installer remasters the ISO. We do the same
-// in place: overwrite the prompt boot image with the noprompt bytes (same size)
-// and retarget the El Torito EFI catalog entry.
+// efi/microsoft/boot/efisys.bin (prompt) and efisys_noprompt.bin (no prompt).
+// Eval ISOs are UDF 1.02 (NSR02) with an ISO9660 stub and often no Joliet; the
+// EFI path is mixed-case (efi vs EFI). We walk Joliet, ISO9660, then UDF
+// case-insensitively, overwrite the prompt boot image with the noprompt bytes
+// (same size), and retarget the El Torito EFI catalog entry.
 func patchISONoprompt(root string) error {
 	path, err := resolveISOPath(root)
 	if err != nil {
@@ -147,34 +148,92 @@ func inspectWindowsISO(r io.ReaderAt) (prompt, noprompt isoExtent, catalogLBA ui
 		}
 	}
 	path := []string{"efi", "microsoft", "boot"}
-	files := []isoExtent{}
+	tryWalk := func(label string, fn func() ([]isoExtent, error)) {
+		if noprompt.lba != 0 {
+			return
+		}
+		files, e := fn()
+		if e != nil {
+			logf("%s walk: %v", label, e)
+			return
+		}
+		p, n := bootFilesFromDir(files)
+		if n.lba == 0 {
+			return
+		}
+		prompt, noprompt = p, n
+		logf("found EFI boot files via %s (noprompt lba=%d size=%d)", label, n.lba, n.size)
+	}
 	if jolietRoot.lba != 0 {
-		files, err = listDirPath(r, jolietRoot, path, true)
-		if err != nil {
-			logf("Joliet walk: %v", err)
-			files = nil
-			err = nil
-		}
+		tryWalk("Joliet", func() ([]isoExtent, error) { return listDirPath(r, jolietRoot, path, true) })
 	}
-	if len(files) == 0 && pvdRoot.lba != 0 {
-		files, err = listDirPath(r, pvdRoot, path, false)
-		if err != nil {
-			return prompt, noprompt, catalogLBA, fmt.Errorf("ISO9660 walk: %w", err)
-		}
+	if pvdRoot.lba != 0 {
+		tryWalk("ISO9660", func() ([]isoExtent, error) { return listDirPath(r, pvdRoot, path, false) })
 	}
-	for _, f := range files {
-		n := strings.ToLower(f.name)
-		switch n {
-		case "efisys.bin":
-			prompt = f
-		case "efisys_noprompt.bin", "efisys_n.bin":
-			noprompt = f
-		}
-	}
+	tryWalk("UDF", func() ([]isoExtent, error) { return listUDFPath(r, path) })
 	if noprompt.lba == 0 {
 		return prompt, noprompt, catalogLBA, fmt.Errorf("efi/microsoft/boot/efisys_noprompt.bin not found (Joliet lba=%d ISO lba=%d)", jolietRoot.lba, pvdRoot.lba)
 	}
 	return prompt, noprompt, catalogLBA, nil
+}
+
+func bootFilesFromDir(files []isoExtent) (prompt, noprompt isoExtent) {
+	for _, f := range files {
+		switch bootFileKind(f.name) {
+		case "prompt":
+			prompt = f
+		case "noprompt":
+			noprompt = f
+		}
+	}
+	return prompt, noprompt
+}
+
+func bootFileKind(name string) string {
+	n := strings.ToLower(normalizeISOName(name))
+	switch n {
+	case "efisys.bin":
+		return "prompt"
+	case "efisys_noprompt.bin", "efisys_n.bin":
+		return "noprompt"
+	}
+	return ""
+}
+
+func normalizeISOName(s string) string {
+	s = strings.Trim(s, " \x00")
+	if i := strings.Index(s, ";"); i >= 0 {
+		s = s[:i]
+	}
+	return strings.TrimRight(s, ".")
+}
+
+func isoNamesEqual(got, want string) bool {
+	g := normalizeISOName(got)
+	w := normalizeISOName(want)
+	if g == "" {
+		return false
+	}
+	if strings.EqualFold(g, w) {
+		return true
+	}
+	gu, wu := strings.ToUpper(g), strings.ToUpper(w)
+	if len(wu) > 8 && gu == wu[:8] {
+		return true
+	}
+	if i := strings.LastIndex(w, "."); i > 0 {
+		base, ext := w[:i], w[i:]
+		if len(base) > 8 {
+			base = base[:8]
+		}
+		if len(ext) > 4 {
+			ext = ext[:4]
+		}
+		if strings.EqualFold(g, base+ext) {
+			return true
+		}
+	}
+	return false
 }
 
 func listDirPath(r io.ReaderAt, root isoExtent, parts []string, joliet bool) ([]isoExtent, error) {
@@ -189,7 +248,7 @@ func listDirPath(r io.ReaderAt, root isoExtent, parts []string, joliet bool) ([]
 			if ents[i].name == "" {
 				continue
 			}
-			if strings.EqualFold(ents[i].name, p) {
+			if isoNamesEqual(ents[i].name, p) {
 				next = &ents[i]
 				break
 			}
@@ -267,12 +326,7 @@ func decodeISOName(raw []byte, joliet bool) string {
 	} else {
 		s = string(raw)
 	}
-	s = strings.TrimRight(s, " ")
-	if i := strings.Index(s, ";"); i >= 0 {
-		s = s[:i]
-	}
-	s = strings.TrimRight(s, ".")
-	return s
+	return normalizeISOName(s)
 }
 
 func dirRecordAt(sec []byte, off int) isoExtent {
