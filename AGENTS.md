@@ -9,8 +9,8 @@ This repository is the **Windows Builder** ConsolePlugin. It is **not** the OCT 
 | | Value |
 | --- | --- |
 | Plugin ID / ConsolePlugin / `package.json` `consolePlugin.name` | **`oct-windows-builder`** |
-| Image | `quay.io/<org>/oct-windows-builder:1.0.1-ocp4.22` (and `:1.0.1-ocp4.21`; `<semver>-ocp<major.minor>`) |
-| Builder image | `quay.io/<org>/oct-windows-builder-builder:1.0.0-ocp4.22` (and `:1.0.0-ocp4.21`) |
+| Image | `quay.io/<org>/oct-windows-builder:1.0.2-ocp4.22` (and `:1.0.2-ocp4.21`; `<semver>-ocp<major.minor>`) |
+| Builder image | `quay.io/<org>/oct-windows-builder-builder:1.0.2-ocp4.22` (and `:1.0.2-ocp4.21`) |
 | i18n | `plugin__oct-windows-builder` |
 | Route | `/community-tools/compute/windows-builder` |
 | Proxy | `/api/proxy/plugin/oct-windows-builder/windows-builder` |
@@ -20,9 +20,9 @@ Display name is **Windows Builder**. Hub is **Compute** (`category: compute`).
 
 ## What this plugin owns
 
-- List CDI DataVolumes used as Windows golden images (`win2k19`, `win2k25`, `win11`, plus custom names)
+- List CDI DataVolumes used as Windows golden images (template `DATA_SOURCE_NAME` such as `win2k19`, plus custom names)
 - Start a long-running unattended Windows install (ISO URL + Autounattend + sysprep) via the in-cluster **builder**
-- Create/update OpenShift Templates that point at the resulting DataVolume
+- Optionally update an OpenShift Template `DATA_SOURCE_NAME` or create a custom Template
 
 **No Tekton. No Argo CD.** Kubernetes Jobs are not required; the builder Deployment drives DataVolumes, a one-shot KubeVirt VM, then a clone DV.
 
@@ -48,7 +48,7 @@ Do **not** mark a DataVolume Ready unless CDI `status.phase` is `Succeeded`.
 
 ## OpenShift and extension versions
 
-Two axes in the catalog: git tag **`v1.x.x`** (semver) and optional branch **`ocp-X.Y`** when PatternFly or APIs diverge. Image tags **always** `<semver>-ocp<major.minor>` (e.g. `1.0.1-ocp4.22`).
+Two axes in the catalog: git tag **`v1.x.x`** (semver) and optional branch **`ocp-X.Y`** when PatternFly or APIs diverge. Image tags **always** `<semver>-ocp<major.minor>` (e.g. `1.0.2-ocp4.22`).
 
 - Git: `main` tracks the newest supported minor (currently **4.22**).
 - PatternFly 6 on 4.22; do not mix PF majors on one branch.

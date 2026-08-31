@@ -1,8 +1,75 @@
 /* Windows Builder. Prefix: wb- */
 
 .wb-lead {
-  max-width: 52rem;
+  max-width: 40rem;
+  margin: 0 0 0.25rem;
   color: var(--pf-t--global--text--color--subtle, #6a6e73);
+}
+
+.wb-wizard {
+  max-width: 52rem;
+}
+
+.wb-step {
+  border-bottom: 1px solid var(--pf-t--global--border--color--default, #d2d2d2);
+}
+
+.wb-step-header {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 0.85rem 0.15rem;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.wb-step-header:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.wb-step-num {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  flex: 0 0 1.5rem;
+  border-radius: 50%;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--pf-t--global--text--color--subtle, #6a6e73);
+  background: var(--pf-t--global--background--color--secondary--default, #f2f2f2);
+}
+
+.wb-step-open .wb-step-num,
+.wb-step-done .wb-step-num {
+  color: #fff;
+  background: var(--pf-t--global--color--brand--default, #0066cc);
+}
+
+.wb-step-title {
+  font-weight: 600;
+}
+
+.wb-step-summary {
+  margin-left: auto;
+  color: var(--pf-t--global--text--color--subtle, #6a6e73);
+  font-size: 0.875rem;
+  font-weight: 400;
+}
+
+.wb-step-quiet .wb-step-header {
+  padding-top: 0.65rem;
+  padding-bottom: 0.65rem;
+}
+
+.wb-step-body {
+  padding: 0 0 1.25rem 2.25rem;
 }
 
 .wb-actions {
@@ -10,7 +77,7 @@
 }
 
 .wb-xml {
-  min-height: 16rem;
+  min-height: 12rem;
   font-family: var(--pf-t--global--font--family--mono, monospace);
   font-size: var(--pf-t--global--font--size--sm, 0.875rem);
 }
@@ -24,4 +91,93 @@
   flex-wrap: wrap;
   align-items: center;
   gap: var(--pf-t--global--spacer--sm, 8px);
+}
+
+.wb-iso-actions {
+  margin-top: 0.25rem;
+}
+
+.wb-edition-gallery {
+  margin-top: 0.5rem;
+}
+
+.wb-edition-tile {
+  height: 100%;
+  border: 1px solid var(--pf-t--global--border--color--default, #c7c7c7);
+  box-shadow: none;
+}
+
+.wb-edition-tile-selected {
+  border-color: var(--pf-t--global--color--brand--default, #0066cc);
+  box-shadow: 0 0 0 1px var(--pf-t--global--color--brand--default, #0066cc);
+}
+
+.wb-edition-body {
+  padding: 0 !important;
+}
+
+.wb-edition-hit {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.65rem;
+  width: 100%;
+  min-height: 8.5rem;
+  padding: 1.1rem 0.6rem 0.9rem;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: center;
+}
+
+.wb-edition-title {
+  font-weight: 600;
+  font-size: 0.9rem;
+  line-height: 1.25;
+}
+
+.wb-edition-sub {
+  font-size: 0.75rem;
+  color: var(--pf-t--global--text--color--subtle, #6a6e73);
+}
+
+.wb-win-flag {
+  width: 36px;
+  height: 36px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+  gap: 3px;
+}
+
+.wb-win-flag span {
+  display: block;
+  background: #0078d4;
+  border-radius: 1px;
+}
+
+.wb-win-flag-muted span {
+  background: var(--pf-t--global--icon--color--subtle, #6a6e73);
+}
+
+.wb-disks {
+  max-width: 52rem;
+  margin-top: 0.5rem;
+}
+
+.wb-disks-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0;
+  border: 0;
+  background: transparent;
+  color: var(--pf-t--global--text--color--subtle, #6a6e73);
+  cursor: pointer;
+  font-size: 0.875rem;
+}
+
+.wb-continue {
+  margin-top: 0.75rem;
 }

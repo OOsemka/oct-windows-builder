@@ -12,9 +12,6 @@ import {
   Breadcrumb,
   BreadcrumbItem,
   Button,
-  Card,
-  CardBody,
-  CardTitle,
   Form,
   FormGroup,
   FormHelperText,
@@ -34,15 +31,13 @@ import {
 import { Table, Thead, Tr, Th, Tbody, Td } from '@patternfly/react-table';
 import React, { Component, ErrorInfo, FC, ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
 
-import { recommendedAutounattend, WindowsSku } from '../utils/autounattend';
+import { recommendedAutounattend } from '../utils/autounattend';
 import { builderHealth, BuildRecord, listBuilds, startBuild } from '../utils/builder-api';
 import {
   DataVolumeKind,
   DataVolumeModel,
   GOLDEN_IMAGE_NAMESPACE,
   PLUGIN_NAMESPACE,
-  PRESET_DISKS,
-  PresetDisk,
   StorageClassKind,
   StorageClassModel,
   TEMPLATE_NAMESPACE,
@@ -55,16 +50,27 @@ import {
   isForbiddenError,
   isMissingCrdError,
   isValidDiskName,
-  isWindowsTemplate,
   phaseToUi,
   virtioImageFromTemplate,
 } from '../utils/k8s-resources';
+import {
+  defaultDiskSizeForSku,
+  editionTitle,
+  groupWindowsFamilies,
+  installCoresForSku,
+  installMemoryForSku,
+  isoHintForSku,
+  preferredTemplateRef,
+  templateRefOf,
+} from '../utils/windows-skus';
 import dashboardLogger from '../utils/logger';
 import CommunityDisclaimer from './CommunityDisclaimer';
+import EditionTiles from './EditionTiles';
 import './windows-builder.css';
 
 const I18N = 'plugin__oct-windows-builder';
 const LOG = 'WINDOWS_BUILDER';
+const CUSTOM_SKU = 'custom';
 
 const DV_GVK = {
   group: DataVolumeModel.apiGroup,
@@ -84,6 +90,11 @@ const SC_GVK = {
   kind: StorageClassModel.kind,
 };
 
+type TemplateAction = 'none' | 'existing' | 'custom';
+type StepId = 'edition' | 'iso' | 'unattend' | 'template' | 'build';
+
+const STEP_ORDER: StepId[] = ['edition', 'iso', 'unattend', 'template', 'build'];
+
 const statusLabelColor = (status: string): 'green' | 'red' | 'orange' | 'blue' | 'grey' => {
   switch (status) {
     case 'Ready':
@@ -101,6 +112,14 @@ const statusLabelColor = (status: string): 'green' | 'red' | 'orange' | 'blue' |
       return 'grey';
   }
 };
+
+function isoHost(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
 
 type ErrorBoundaryProps = {
   children: ReactNode;
@@ -133,6 +152,28 @@ class WindowsBuilderErrorBoundary extends Component<ErrorBoundaryProps, ErrorBou
     return this.props.children;
   }
 }
+
+type WizardSectionProps = {
+  n: number;
+  title: string;
+  summary?: string;
+  open: boolean;
+  unlocked: boolean;
+  done: boolean;
+  onOpen: () => void;
+  children?: ReactNode;
+};
+
+const WizardSection: FC<WizardSectionProps> = ({ n, title, summary, open, unlocked, done, onOpen, children }) => (
+  <section className={`wb-step${open ? ' wb-step-open' : ' wb-step-quiet'}${done && !open ? ' wb-step-done' : ''}`}>
+    <button type="button" className="wb-step-header" onClick={onOpen} disabled={!unlocked} aria-expanded={open}>
+      <span className="wb-step-num">{n}</span>
+      <span className="wb-step-title">{title}</span>
+      {!open && summary ? <span className="wb-step-summary">{summary}</span> : null}
+    </button>
+    {open ? <div className="wb-step-body">{children}</div> : null}
+  </section>
+);
 
 const WindowsBuilderPageInner: FC = () => {
   const { t } = useTranslation(I18N);
@@ -173,7 +214,6 @@ const WindowsBuilderPageInner: FC = () => {
           groupVersionKind: TPL_GVK,
           isList: true,
           namespaced: true,
-          namespace: TEMPLATE_NAMESPACE,
         }
       : null,
   );
@@ -188,14 +228,16 @@ const WindowsBuilderPageInner: FC = () => {
       : null,
   );
 
-  const [sku, setSku] = useState<WindowsSku>('win2k19');
+  const [sku, setSku] = useState('');
   const [customDisk, setCustomDisk] = useState('');
   const [isoURL, setIsoURL] = useState('');
+  const [isoTouched, setIsoTouched] = useState(false);
   const [storageClass, setStorageClass] = useState('');
   const [diskSize, setDiskSize] = useState('60Gi');
-  const [xml, setXml] = useState(() => recommendedAutounattend('win2k19'));
+  const [diskSizeTouched, setDiskSizeTouched] = useState(false);
+  const [xml, setXml] = useState('');
   const [xmlTouched, setXmlTouched] = useState(false);
-  const [templateMode, setTemplateMode] = useState<'existing' | 'custom'>('existing');
+  const [templateAction, setTemplateAction] = useState<TemplateAction>('none');
   const [templateRef, setTemplateRef] = useState('');
   const [customTemplate, setCustomTemplate] = useState('');
   const [virtioImage, setVirtioImage] = useState('');
@@ -205,13 +247,49 @@ const WindowsBuilderPageInner: FC = () => {
   const [builderUp, setBuilderUp] = useState<boolean | null>(null);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState<{ variant: 'success' | 'danger'; msg: string } | null>(null);
+  const [focus, setFocus] = useState<StepId>('edition');
+  const [maxStep, setMaxStep] = useState<StepId>('edition');
+  const [disksOpen, setDisksOpen] = useState(false);
 
-  const diskName = sku === 'custom' ? customDisk.trim() : sku;
-
-  const windowsTemplates = useMemo(
-    () => ((templates || []) as TemplateKind[]).filter((x) => x?.metadata?.name && isWindowsTemplate(x)),
+  const families = useMemo(
+    () => groupWindowsFamilies((templates || []) as TemplateKind[]),
     [templates],
   );
+
+  const selectedFamily = sku && sku !== CUSTOM_SKU ? families.find((f) => f.id === sku) : undefined;
+  const autounattendSku = sku === CUSTOM_SKU ? customDisk.trim() || CUSTOM_SKU : sku || CUSTOM_SKU;
+  const diskName = sku === CUSTOM_SKU ? customDisk.trim() : sku;
+  const isoHint = isoHintForSku(sku === CUSTOM_SKU ? CUSTOM_SKU : sku);
+  const familyTemplates = selectedFamily?.templates || [];
+  const editionSummary = sku === CUSTOM_SKU
+    ? customDisk.trim() || t('Custom')
+    : selectedFamily
+      ? editionTitle(selectedFamily.id, selectedFamily.displayName)
+      : '';
+
+  const editionReady = sku === CUSTOM_SKU ? isValidDiskName(customDisk.trim()) : Boolean(sku);
+  const isoReady = /^https?:\/\//i.test(isoURL.trim());
+  const xmlReady = xml.trim().length > 0;
+
+  const unlock: Record<StepId, boolean> = {
+    edition: true,
+    iso: editionReady,
+    unattend: editionReady && isoReady,
+    template: editionReady && isoReady && xmlReady,
+    build: editionReady && isoReady && xmlReady,
+  };
+
+  const openStep = (id: StepId) => {
+    if (!unlock[id]) return;
+    setFocus(id);
+  };
+
+  const goNext = (id: StepId) => {
+    const i = STEP_ORDER.indexOf(id);
+    const next = STEP_ORDER[Math.min(i + 1, STEP_ORDER.length - 1)];
+    setMaxStep((cur) => (STEP_ORDER.indexOf(next) > STEP_ORDER.indexOf(cur) ? next : cur));
+    setFocus(next);
+  };
 
   const goldenDVs = useMemo(() => {
     const fromGolden = ((dvGolden || []) as DataVolumeKind[]).filter((d) => d?.metadata?.name);
@@ -219,15 +297,16 @@ const WindowsBuilderPageInner: FC = () => {
     const map = new Map<string, DataVolumeKind>();
     fromWork.forEach((d) => map.set(`${d.metadata.namespace}/${d.metadata.name}`, d));
     fromGolden.forEach((d) => map.set(`${d.metadata.namespace}/${d.metadata.name}`, d));
+    const ids = new Set(families.map((f) => f.id));
     const list = Array.from(map.values());
     list.sort((a, b) => {
-      const ap = PRESET_DISKS.includes(a.metadata.name as PresetDisk) ? 0 : 1;
-      const bp = PRESET_DISKS.includes(b.metadata.name as PresetDisk) ? 0 : 1;
+      const ap = ids.has(a.metadata.name) ? 0 : 1;
+      const bp = ids.has(b.metadata.name) ? 0 : 1;
       if (ap !== bp) return ap - bp;
       return a.metadata.name.localeCompare(b.metadata.name);
     });
     return list;
-  }, [dvGolden, dvWork]);
+  }, [dvGolden, dvWork, families]);
 
   const scList = useMemo(
     () => ((storageClasses || []) as StorageClassKind[]).filter((s) => s?.metadata?.name),
@@ -235,13 +314,24 @@ const WindowsBuilderPageInner: FC = () => {
   );
 
   useEffect(() => {
-    if (xmlTouched) return;
-    setXml(recommendedAutounattend(sku));
-  }, [sku, xmlTouched]);
+    if (xmlTouched || !sku) return;
+    setXml(recommendedAutounattend(autounattendSku));
+  }, [sku, customDisk, xmlTouched, autounattendSku]);
+
+  useEffect(() => {
+    if (isoTouched || !sku) return;
+    setIsoURL(isoHint.url || '');
+  }, [sku, isoTouched, isoHint.url]);
+
+  useEffect(() => {
+    if (diskSizeTouched || !sku) return;
+    setDiskSize(defaultDiskSizeForSku(sku, selectedFamily));
+  }, [sku, selectedFamily, diskSizeTouched]);
 
   useEffect(() => {
     if (virtioPrefill) return;
-    for (const tpl of windowsTemplates) {
+    const all = families.flatMap((f) => f.templates);
+    for (const tpl of all) {
       const img = virtioImageFromTemplate(tpl);
       if (img) {
         setVirtioImage(img);
@@ -249,7 +339,7 @@ const WindowsBuilderPageInner: FC = () => {
         return;
       }
     }
-  }, [windowsTemplates, virtioPrefill]);
+  }, [families, virtioPrefill]);
 
   useEffect(() => {
     if (scPrefill || !scLoaded) return;
@@ -263,13 +353,18 @@ const WindowsBuilderPageInner: FC = () => {
   }, [goldenDVs, scLoaded, scPrefill]);
 
   useEffect(() => {
-    if (templateRef || windowsTemplates.length === 0) return;
-    setTemplateRef(`${windowsTemplates[0].metadata.namespace || TEMPLATE_NAMESPACE}/${windowsTemplates[0].metadata.name}`);
-  }, [windowsTemplates, templateRef]);
+    if (templateAction !== 'existing') return;
+    if (!familyTemplates.length) {
+      setTemplateRef('');
+      return;
+    }
+    const still = familyTemplates.some((tpl) => templateRefOf(tpl) === templateRef);
+    if (!still) setTemplateRef(preferredTemplateRef(familyTemplates));
+  }, [templateAction, familyTemplates, templateRef]);
 
   useEffect(() => {
-    if (tplMissing) setTemplateMode('custom');
-  }, [tplMissing]);
+    if (tplMissing && templateAction === 'existing') setTemplateAction('none');
+  }, [tplMissing, templateAction]);
 
   const refreshBuilds = useCallback(async () => {
     try {
@@ -290,32 +385,45 @@ const WindowsBuilderPageInner: FC = () => {
     return () => window.clearInterval(id);
   }, [refreshBuilds]);
 
-  const onSku = (next: WindowsSku) => {
+  useEffect(() => {
+    const busy = builds.some((b) => b.status === 'Installing' || b.status === 'Sysprep' || b.status === 'Pending');
+    if (busy) setDisksOpen(true);
+  }, [builds]);
+
+  const onSku = (next: string) => {
     setSku(next);
     setXmlTouched(false);
+    setIsoTouched(false);
+    setDiskSizeTouched(false);
     setStatus(null);
+    setMaxStep((cur) => (STEP_ORDER.indexOf('iso') > STEP_ORDER.indexOf(cur) ? 'iso' : cur));
+    if (next !== CUSTOM_SKU) setFocus('iso');
   };
 
   const submit = useCallback(async () => {
     if (!isoURL.trim()) {
       setStatus({ variant: 'danger', msg: t('ISO URL is required.') });
+      setFocus('iso');
       return;
     }
     if (!isValidDiskName(diskName)) {
       setStatus({ variant: 'danger', msg: t('Enter a valid DataVolume name.') });
+      setFocus('edition');
       return;
     }
     setSaving(true);
     setStatus(null);
     try {
       let templateName = '';
-      let templateNamespace = TEMPLATE_NAMESPACE;
-      if (templateMode === 'existing' && templateRef) {
+      let templateNamespace = selectedFamily?.templates[0]?.metadata.namespace || TEMPLATE_NAMESPACE;
+      let customTpl = false;
+      if (templateAction === 'existing' && templateRef) {
         const slash = templateRef.indexOf('/');
         templateNamespace = templateRef.slice(0, slash);
         templateName = templateRef.slice(slash + 1);
-      } else {
+      } else if (templateAction === 'custom') {
         templateName = customTemplate.trim();
+        customTpl = true;
       }
       const rec = await startBuild({
         diskName,
@@ -323,13 +431,18 @@ const WindowsBuilderPageInner: FC = () => {
         autounattend: xml,
         storageClassName: storageClass || undefined,
         diskSize,
-        customTemplate: templateMode === 'custom',
+        isoSize: '12Gi',
+        goldenNamespace: selectedFamily?.goldenNamespace || GOLDEN_IMAGE_NAMESPACE,
+        customTemplate: customTpl,
         templateName: templateName || undefined,
         templateNamespace,
         virtioImage: virtioImage.trim() || undefined,
+        memory: installMemoryForSku(sku === CUSTOM_SKU ? diskName : sku),
+        cores: installCoresForSku(sku === CUSTOM_SKU ? diskName : sku),
       });
       dashboardLogger.info(LOG, 'Started build', rec.diskName);
       setStatus({ variant: 'success', msg: t('Build started.') });
+      setDisksOpen(true);
       await refreshBuilds();
     } catch (err) {
       dashboardLogger.error(LOG, 'Start build failed', getK8sErrorMessage(err));
@@ -343,10 +456,12 @@ const WindowsBuilderPageInner: FC = () => {
     xml,
     storageClass,
     diskSize,
-    templateMode,
+    templateAction,
     templateRef,
     customTemplate,
     virtioImage,
+    selectedFamily,
+    sku,
     t,
     refreshBuilds,
   ]);
@@ -356,7 +471,9 @@ const WindowsBuilderPageInner: FC = () => {
   const dvMissingCrd = isMissingCrdError(dvErr);
   const cdiMissing = (!modelsInFlight && !hasDv) || dvMissingCrd;
   const tplForbidden = isForbiddenError(templatesErr);
-  const existing = goldenDVs.some((d) => d.metadata.name === diskName && d.metadata.namespace === GOLDEN_IMAGE_NAMESPACE);
+  const existing = goldenDVs.some(
+    (d) => d.metadata.name === diskName && d.metadata.namespace === (selectedFamily?.goldenNamespace || GOLDEN_IMAGE_NAMESPACE),
+  );
   const buildByDisk = useMemo(() => {
     const m = new Map<string, BuildRecord>();
     builds.forEach((b) => m.set(b.diskName, b));
@@ -364,11 +481,20 @@ const WindowsBuilderPageInner: FC = () => {
   }, [builds]);
 
   const dvLoading = modelsInFlight || (hasDv && !dvGoldenLoaded && !dvWorkLoaded && !dvErr);
-  const canStart = !saving && !cdiMissing && Boolean(isoURL.trim()) && isValidDiskName(diskName);
+  const canStart = !saving && !cdiMissing && isoReady && isValidDiskName(diskName);
+  const tplLoading = hasTpl && !templatesLoaded && !templatesErr;
+  const templateSummary =
+    templateAction === 'none'
+      ? t('DataVolume only')
+      : templateAction === 'existing'
+        ? templateRef || t('Update an existing template')
+        : customTemplate.trim() || t('Create a custom template');
 
   const goComputeHub = () => {
     window.location.href = '/community-tools/compute';
   };
+
+  const reached = (id: StepId) => STEP_ORDER.indexOf(maxStep) >= STEP_ORDER.indexOf(id) && unlock[id];
 
   return (
     <>
@@ -392,11 +518,6 @@ const WindowsBuilderPageInner: FC = () => {
         <Stack hasGutter>
           <StackItem>
             <CommunityDisclaimer />
-          </StackItem>
-          <StackItem>
-            <p className="wb-lead">
-              {t('Build sysprepped Windows disks for OpenShift Virtualization. Provide an ISO URL the cluster can pull. No Tekton.')}
-            </p>
           </StackItem>
           {cdiMissing ? (
             <StackItem>
@@ -433,23 +554,340 @@ const WindowsBuilderPageInner: FC = () => {
           ) : null}
 
           <StackItem>
-            <Card>
-              <CardTitle>{t('Golden images')}</CardTitle>
-              <CardBody>
-                {dvLoading ? (
-                  <Spinner size="lg" aria-label={t('Loading')} />
+            <Form
+              className="wb-wizard"
+              onSubmit={(e) => {
+                e.preventDefault();
+                void submit();
+              }}
+            >
+              <WizardSection
+                n={1}
+                title={t('Edition')}
+                summary={editionSummary}
+                open={focus === 'edition'}
+                unlocked
+                done={editionReady}
+                onOpen={() => openStep('edition')}
+              >
+                <p className="wb-lead">{t('Choose a Windows edition. We will ask for an ISO next.')}</p>
+                <EditionTiles families={families} sku={sku} loading={tplLoading} onSelect={onSku} />
+                {sku === CUSTOM_SKU ? (
+                  <FormGroup label={t('DataVolume name')} fieldId="wb-disk" isRequired>
+                    <TextInput
+                      id="wb-disk"
+                      value={customDisk}
+                      onChange={(_e, v) => setCustomDisk(v)}
+                      validated={customDisk && !isValidDiskName(customDisk.trim()) ? 'error' : 'default'}
+                      aria-label={t('DataVolume name')}
+                    />
+                    <FormHelperText>
+                      <HelperText>
+                        <HelperTextItem>{t('Must be a DNS-1123 name (lowercase, digits, dashes), max 50 characters.')}</HelperTextItem>
+                      </HelperText>
+                    </FormHelperText>
+                  </FormGroup>
+                ) : null}
+                {selectedFamily ? (
+                  <FormHelperText>
+                    <HelperText>
+                      <HelperTextItem>
+                        {t('Golden DataVolume name comes from the template DATA_SOURCE_NAME parameter ({{name}}).', {
+                          name: selectedFamily.id,
+                        })}
+                      </HelperTextItem>
+                    </HelperText>
+                  </FormHelperText>
+                ) : null}
+                {sku === CUSTOM_SKU && isValidDiskName(customDisk.trim()) ? (
+                  <div className="wb-continue">
+                    <Button variant="primary" onClick={() => goNext('edition')}>
+                      {t('Continue')}
+                    </Button>
+                  </div>
+                ) : null}
+              </WizardSection>
+
+              <WizardSection
+                n={2}
+                title={t('ISO')}
+                summary={isoReady ? isoHost(isoURL) : undefined}
+                open={focus === 'iso'}
+                unlocked={unlock.iso}
+                done={isoReady}
+                onOpen={() => openStep('iso')}
+              >
+                <FormGroup label={t('Windows ISO URL')} fieldId="wb-iso" isRequired>
+                  <TextInput
+                    id="wb-iso"
+                    value={isoURL}
+                    onChange={(_e, v) => {
+                      setIsoURL(v);
+                      setIsoTouched(true);
+                    }}
+                    placeholder="https://"
+                    aria-label={t('Windows ISO URL')}
+                  />
+                  {isoHint.url ? (
+                    <div className="wb-iso-actions">
+                      <Button
+                        variant="link"
+                        isInline
+                        onClick={() => {
+                          setIsoURL(isoHint.url || '');
+                          setIsoTouched(false);
+                          goNext('iso');
+                        }}
+                      >
+                        {t('Use suggested ISO URL')}
+                      </Button>
+                    </div>
+                  ) : null}
+                  <FormHelperText>
+                    <HelperText>
+                      <HelperTextItem>{t(isoHint.helper)}</HelperTextItem>
+                      {isoHint.evalCenter ? (
+                        <HelperTextItem>
+                          <a href={isoHint.evalCenter} target="_blank" rel="noreferrer">
+                            {t('Microsoft Evaluation Center')}
+                          </a>
+                        </HelperTextItem>
+                      ) : null}
+                    </HelperText>
+                  </FormHelperText>
+                </FormGroup>
+                {isoReady ? (
+                  <div className="wb-continue">
+                    <Button variant="primary" onClick={() => goNext('iso')}>
+                      {t('Continue')}
+                    </Button>
+                  </div>
+                ) : null}
+              </WizardSection>
+
+              <WizardSection
+                n={3}
+                title={t('Autounattend')}
+                summary={xmlReady ? t('Recommended for this version') : undefined}
+                open={focus === 'unattend'}
+                unlocked={unlock.unattend}
+                done={xmlReady && reached('unattend')}
+                onOpen={() => openStep('unattend')}
+              >
+                <FormGroup label={t('Autounattend.xml')} fieldId="wb-xml">
+                  <Button
+                    variant="link"
+                    isInline
+                    onClick={() => {
+                      setXml(recommendedAutounattend(autounattendSku));
+                      setXmlTouched(false);
+                    }}
+                  >
+                    {t('Use recommended for this version')}
+                  </Button>
+                  <TextArea
+                    className="wb-xml"
+                    id="wb-xml"
+                    value={xml}
+                    onChange={(_e, v) => {
+                      setXml(v);
+                      setXmlTouched(true);
+                    }}
+                    rows={10}
+                    aria-label={t('Autounattend.xml')}
+                  />
+                  <FormHelperText>
+                    <HelperText>
+                      <HelperTextItem>
+                        {t('Virtio drivers (viostor, NetKVM, Balloon), GPT/EFI, public KMS key, then sysprep /generalize /oobe /shutdown. Windows 11 also bypasses TPM/Secure Boot checks. Edit the temporary AutoLogon password.')}
+                      </HelperTextItem>
+                    </HelperText>
+                  </FormHelperText>
+                </FormGroup>
+                {xmlReady ? (
+                  <div className="wb-continue">
+                    <Button variant="primary" onClick={() => goNext('unattend')}>
+                      {t('Continue')}
+                    </Button>
+                  </div>
+                ) : null}
+              </WizardSection>
+
+              <WizardSection
+                n={4}
+                title={t('Template')}
+                summary={reached('template') ? templateSummary : undefined}
+                open={focus === 'template'}
+                unlocked={unlock.template}
+                done={reached('template')}
+                onOpen={() => openStep('template')}
+              >
+                <FormGroup label={t('Template')} fieldId="wb-tpl-mode">
+                  <Radio
+                    id="wb-tpl-none"
+                    name="wb-tpl-mode"
+                    label={t("Don't update templates (DataVolume only)")}
+                    isChecked={templateAction === 'none'}
+                    onChange={() => setTemplateAction('none')}
+                  />
+                  <Radio
+                    id="wb-tpl-existing"
+                    name="wb-tpl-mode"
+                    label={t('Update an existing template')}
+                    isChecked={templateAction === 'existing'}
+                    onChange={() => setTemplateAction('existing')}
+                    isDisabled={tplMissing || (sku !== CUSTOM_SKU && familyTemplates.length === 0)}
+                  />
+                  <Radio
+                    id="wb-tpl-custom"
+                    name="wb-tpl-mode"
+                    label={t('Create a custom template')}
+                    isChecked={templateAction === 'custom'}
+                    onChange={() => setTemplateAction('custom')}
+                  />
+                </FormGroup>
+                {templateAction === 'existing' && !tplMissing ? (
+                  <FormGroup label={t('Template to update')} fieldId="wb-tpl">
+                    <FormSelect
+                      id="wb-tpl"
+                      value={templateRef}
+                      onChange={(_e, v) => setTemplateRef(v)}
+                      aria-label={t('Template to update')}
+                      isDisabled={familyTemplates.length === 0 || !templatesLoaded}
+                    >
+                      {familyTemplates.length === 0 ? (
+                        <FormSelectOption value="" label={t('No Windows Templates found for this family.')} />
+                      ) : (
+                        familyTemplates.map((tpl) => {
+                          const val = templateRefOf(tpl);
+                          return <FormSelectOption key={val} value={val} label={val} />;
+                        })
+                      )}
+                    </FormSelect>
+                    <FormHelperText>
+                      <HelperText>
+                        <HelperTextItem>
+                          {t('Stock templates already clone this DataSource name. Updating sets DATA_SOURCE_NAME to this DataVolume.')}
+                        </HelperTextItem>
+                      </HelperText>
+                    </FormHelperText>
+                  </FormGroup>
+                ) : null}
+                {templateAction === 'custom' ? (
+                  <FormGroup label={t('Custom template name')} fieldId="wb-tpl-name">
+                    <TextInput
+                      id="wb-tpl-name"
+                      value={customTemplate}
+                      onChange={(_e, v) => setCustomTemplate(v)}
+                      aria-label={t('Custom template name')}
+                    />
+                    <FormHelperText>
+                      <HelperText>
+                        <HelperTextItem>{t('Created in the openshift namespace unless you select an existing Template.')}</HelperTextItem>
+                      </HelperText>
+                    </FormHelperText>
+                  </FormGroup>
+                ) : null}
+                <div className="wb-continue">
+                  <Button variant="primary" onClick={() => goNext('template')}>
+                    {t('Continue')}
+                  </Button>
+                </div>
+              </WizardSection>
+
+              <WizardSection
+                n={5}
+                title={t('Build')}
+                summary={undefined}
+                open={focus === 'build'}
+                unlocked={unlock.build && reached('build')}
+                done={false}
+                onOpen={() => openStep('build')}
+              >
+                <FormGroup label={t('Storage class')} fieldId="wb-sc">
+                  <FormSelect
+                    id="wb-sc"
+                    value={storageClass}
+                    onChange={(_e, v) => setStorageClass(v)}
+                    aria-label={t('Storage class')}
+                  >
+                    <FormSelectOption value="" label={t('Cluster default')} />
+                    {scList.map((sc) => (
+                      <FormSelectOption
+                        key={sc.metadata.name}
+                        value={sc.metadata.name}
+                        label={isDefaultStorageClass(sc) ? `${sc.metadata.name} (${t('default')})` : sc.metadata.name}
+                      />
+                    ))}
+                  </FormSelect>
+                  <FormHelperText>
+                    <HelperText>
+                      <HelperTextItem>{t('Omit to use the cluster default. Never hardcode a lab class.')}</HelperTextItem>
+                    </HelperText>
+                  </FormHelperText>
+                </FormGroup>
+                <FormGroup label={t('Disk size')} fieldId="wb-size">
+                  <TextInput
+                    id="wb-size"
+                    value={diskSize}
+                    onChange={(_e, v) => {
+                      setDiskSize(v);
+                      setDiskSizeTouched(true);
+                    }}
+                    aria-label={t('Disk size')}
+                  />
+                </FormGroup>
+                <FormGroup label={t('virtio-win containerDisk')} fieldId="wb-virtio">
+                  <TextInput
+                    id="wb-virtio"
+                    value={virtioImage}
+                    onChange={(_e, v) => setVirtioImage(v)}
+                    aria-label={t('virtio-win containerDisk')}
+                  />
+                  <FormHelperText>
+                    <HelperText>
+                      <HelperTextItem>
+                        {t('Optional. Pre-filled from an existing Windows Template when one lists a virtio-win image. The cluster must be able to pull it.')}
+                      </HelperTextItem>
+                    </HelperText>
+                  </FormHelperText>
+                </FormGroup>
+                {existing ? (
+                  <Alert
+                    variant="warning"
+                    isInline
+                    title={t('This replaces DataVolume {{name}} if it already exists, after the new install disk is ready.', { name: diskName })}
+                  />
+                ) : null}
+                {status ? <Alert variant={status.variant} isInline title={status.msg} /> : null}
+                <ActionGroup className="wb-actions">
+                  <Button variant="primary" type="submit" isDisabled={!canStart} isLoading={saving}>
+                    {t('Start build')}
+                  </Button>
+                </ActionGroup>
+              </WizardSection>
+            </Form>
+          </StackItem>
+
+          <StackItem>
+            <div className="wb-disks">
+              <button type="button" className="wb-disks-toggle" onClick={() => setDisksOpen((v) => !v)} aria-expanded={disksOpen}>
+                {disksOpen ? t('Hide golden disks') : t('Golden disks')}
+                {goldenDVs.length ? ` (${goldenDVs.length})` : ''}
+              </button>
+              {disksOpen ? (
+                dvLoading ? (
+                  <Spinner size="md" aria-label={t('Loading')} />
                 ) : cdiMissing ? (
-                  <p>{t('No DataVolumes to show until OpenShift Virtualization (CDI) is installed.')}</p>
+                  <p className="wb-lead">{t('No DataVolumes to show until OpenShift Virtualization (CDI) is installed.')}</p>
                 ) : goldenDVs.length === 0 ? (
-                  <p>{t('No Windows DataVolumes yet. Start a build to create win2k19, win2k25, win11, or a custom name.')}</p>
+                  <p className="wb-lead">{t('No Windows DataVolumes yet.')}</p>
                 ) : (
-                  <Table variant="compact" aria-label={t('Golden images')}>
+                  <Table variant="compact" aria-label={t('Golden disks')}>
                     <Thead>
                       <Tr>
                         <Th>{t('Name')}</Th>
-                        <Th>{t('Namespace')}</Th>
                         <Th>{t('Phase')}</Th>
-                        <Th>{t('StorageClass')}</Th>
                         <Th>{t('Build')}</Th>
                       </Tr>
                     </Thead>
@@ -460,11 +898,9 @@ const WindowsBuilderPageInner: FC = () => {
                         return (
                           <Tr key={`${dv.metadata.namespace}/${dv.metadata.name}`}>
                             <Td dataLabel={t('Name')}>{dv.metadata.name}</Td>
-                            <Td dataLabel={t('Namespace')}>{dv.metadata.namespace}</Td>
                             <Td dataLabel={t('Phase')}>
                               <Label color={statusLabelColor(ui)}>{dv.status?.phase || ui}</Label>
                             </Td>
-                            <Td dataLabel={t('StorageClass')}>{dvStorageClass(dv) || t('default')}</Td>
                             <Td dataLabel={t('Build')}>
                               {b ? (
                                 <span className="wb-status-row">
@@ -480,215 +916,9 @@ const WindowsBuilderPageInner: FC = () => {
                       })}
                     </Tbody>
                   </Table>
-                )}
-                <FormHelperText>
-                  <HelperText>
-                    <HelperTextItem>
-                      {t('Golden images are DataVolumes in openshift-virtualization-os-images plus any this plugin created.')}
-                    </HelperTextItem>
-                  </HelperText>
-                </FormHelperText>
-              </CardBody>
-            </Card>
-          </StackItem>
-
-          <StackItem>
-            <Card>
-              <CardTitle>{t('Build')}</CardTitle>
-              <CardBody>
-                <Form
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    void submit();
-                  }}
-                >
-                  <FormGroup label={t('Windows edition')} fieldId="wb-sku" isRequired>
-                    <FormSelect
-                      id="wb-sku"
-                      value={sku}
-                      onChange={(_e, v) => onSku(v as WindowsSku)}
-                      aria-label={t('Windows edition')}
-                    >
-                      <FormSelectOption value="win2k19" label={t('Windows Server 2019 (win2k19)')} />
-                      <FormSelectOption value="win2k25" label={t('Windows Server 2025 (win2k25)')} />
-                      <FormSelectOption value="win11" label={t('Windows 11 (win11)')} />
-                      <FormSelectOption value="custom" label={t('Custom name')} />
-                    </FormSelect>
-                  </FormGroup>
-                  {sku === 'custom' ? (
-                    <FormGroup label={t('DataVolume name')} fieldId="wb-disk" isRequired>
-                      <TextInput
-                        id="wb-disk"
-                        value={customDisk}
-                        onChange={(_e, v) => setCustomDisk(v)}
-                        validated={customDisk && !isValidDiskName(customDisk.trim()) ? 'error' : 'default'}
-                        aria-label={t('DataVolume name')}
-                      />
-                      <FormHelperText>
-                        <HelperText>
-                          <HelperTextItem>{t('Must be a DNS-1123 name (lowercase, digits, dashes), max 50 characters.')}</HelperTextItem>
-                        </HelperText>
-                      </FormHelperText>
-                    </FormGroup>
-                  ) : null}
-                  <FormGroup label={t('Windows ISO URL')} fieldId="wb-iso" isRequired>
-                    <TextInput
-                      id="wb-iso"
-                      value={isoURL}
-                      onChange={(_e, v) => setIsoURL(v)}
-                      placeholder="https://"
-                      aria-label={t('Windows ISO URL')}
-                    />
-                    <FormHelperText>
-                      <HelperText>
-                        <HelperTextItem>
-                          {t('HTTP or HTTPS URL the cluster can pull. Do not use a lab-only host unless this cluster can reach it.')}
-                        </HelperTextItem>
-                      </HelperText>
-                    </FormHelperText>
-                  </FormGroup>
-                  <FormGroup label={t('Template')} fieldId="wb-tpl-mode">
-                    <Radio
-                      id="wb-tpl-existing"
-                      name="wb-tpl-mode"
-                      label={t('Existing template')}
-                      isChecked={templateMode === 'existing'}
-                      onChange={() => setTemplateMode('existing')}
-                      isDisabled={tplMissing}
-                    />
-                    <Radio
-                      id="wb-tpl-custom"
-                      name="wb-tpl-mode"
-                      label={t('Custom template')}
-                      isChecked={templateMode === 'custom'}
-                      onChange={() => setTemplateMode('custom')}
-                    />
-                  </FormGroup>
-                  {templateMode === 'existing' && !tplMissing ? (
-                    <FormGroup label={t('Template')} fieldId="wb-tpl">
-                      <FormSelect
-                        id="wb-tpl"
-                        value={templateRef}
-                        onChange={(_e, v) => setTemplateRef(v)}
-                        aria-label={t('Template')}
-                        isDisabled={windowsTemplates.length === 0 || !templatesLoaded}
-                      >
-                        {windowsTemplates.length === 0 ? (
-                          <FormSelectOption value="" label={t('No Windows Templates found. You can still type a custom template name.')} />
-                        ) : (
-                          windowsTemplates.map((tpl) => {
-                            const val = `${tpl.metadata.namespace || TEMPLATE_NAMESPACE}/${tpl.metadata.name}`;
-                            return <FormSelectOption key={val} value={val} label={val} />;
-                          })
-                        )}
-                      </FormSelect>
-                    </FormGroup>
-                  ) : (
-                    <FormGroup label={t('Custom template name')} fieldId="wb-tpl-name">
-                      <TextInput
-                        id="wb-tpl-name"
-                        value={customTemplate}
-                        onChange={(_e, v) => setCustomTemplate(v)}
-                        aria-label={t('Custom template name')}
-                      />
-                      <FormHelperText>
-                        <HelperText>
-                          <HelperTextItem>{t('Created in the openshift namespace unless you select an existing Template.')}</HelperTextItem>
-                        </HelperText>
-                      </FormHelperText>
-                    </FormGroup>
-                  )}
-                  <FormGroup label={t('Storage class')} fieldId="wb-sc">
-                    <FormSelect
-                      id="wb-sc"
-                      value={storageClass}
-                      onChange={(_e, v) => setStorageClass(v)}
-                      aria-label={t('Storage class')}
-                    >
-                      <FormSelectOption value="" label={t('Cluster default')} />
-                      {scList.map((sc) => (
-                        <FormSelectOption
-                          key={sc.metadata.name}
-                          value={sc.metadata.name}
-                          label={isDefaultStorageClass(sc) ? `${sc.metadata.name} (${t('default')})` : sc.metadata.name}
-                        />
-                      ))}
-                    </FormSelect>
-                    <FormHelperText>
-                      <HelperText>
-                        <HelperTextItem>{t('Omit to use the cluster default. Never hardcode a lab class.')}</HelperTextItem>
-                      </HelperText>
-                    </FormHelperText>
-                  </FormGroup>
-                  <FormGroup label={t('Disk size')} fieldId="wb-size">
-                    <TextInput id="wb-size" value={diskSize} onChange={(_e, v) => setDiskSize(v)} aria-label={t('Disk size')} />
-                  </FormGroup>
-                  <FormGroup label={t('virtio-win containerDisk')} fieldId="wb-virtio">
-                    <TextInput
-                      id="wb-virtio"
-                      value={virtioImage}
-                      onChange={(_e, v) => setVirtioImage(v)}
-                      aria-label={t('virtio-win containerDisk')}
-                    />
-                    <FormHelperText>
-                      <HelperText>
-                        <HelperTextItem>
-                          {t('Optional. Pre-filled from an existing Windows Template when one lists a virtio-win image. The cluster must be able to pull it.')}
-                        </HelperTextItem>
-                      </HelperText>
-                    </FormHelperText>
-                  </FormGroup>
-                  <FormGroup label={t('Autounattend.xml')} fieldId="wb-xml">
-                    <Button
-                      variant="link"
-                      isInline
-                      onClick={() => {
-                        setXml(recommendedAutounattend(sku));
-                        setXmlTouched(false);
-                      }}
-                    >
-                      {t('Use recommended')}
-                    </Button>
-                    <TextArea
-                      className="wb-xml"
-                      id="wb-xml"
-                      value={xml}
-                      onChange={(_e, v) => {
-                        setXml(v);
-                        setXmlTouched(true);
-                      }}
-                      rows={14}
-                      aria-label={t('Autounattend.xml')}
-                    />
-                    <FormHelperText>
-                      <HelperText>
-                        <HelperTextItem>
-                          {t('Recommended XML loads virtio drivers from E:, partitions the disk (GPT/EFI), then sysprep /generalize /oobe /shutdown. Edit product key, image index, and the temporary AutoLogon password.')}
-                        </HelperTextItem>
-                      </HelperText>
-                    </FormHelperText>
-                  </FormGroup>
-                  {existing ? (
-                    <Alert
-                      variant="warning"
-                      isInline
-                      title={t('This replaces DataVolume {{name}} if it already exists, after the new install disk is ready.', { name: diskName })}
-                    />
-                  ) : null}
-                  {status ? <Alert variant={status.variant} isInline title={status.msg} /> : null}
-                  <ActionGroup className="wb-actions">
-                    <Button
-                      variant="primary"
-                      type="submit"
-                      isDisabled={!canStart}
-                      isLoading={saving}
-                    >
-                      {t('Start build')}
-                    </Button>
-                  </ActionGroup>
-                </Form>
-              </CardBody>
-            </Card>
+                )
+              ) : null}
+            </div>
           </StackItem>
         </Stack>
       </PageSection>

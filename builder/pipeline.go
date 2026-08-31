@@ -61,7 +61,7 @@ func (m *Manager) Start(req StartBuildRequest) (*BuildRecord, error) {
 		req.DiskSize = "60Gi"
 	}
 	if req.ISOSize == "" {
-		req.ISOSize = "8Gi"
+		req.ISOSize = "12Gi"
 	}
 	if req.Memory == "" {
 		req.Memory = "4Gi"
@@ -617,8 +617,12 @@ func (m *Manager) ensureTemplate(req StartBuildRequest) error {
 		return err
 	}
 	if existing != nil && code != http.StatusNotFound && !req.CustomTemplate {
-		// Existing CNV template already points at DataSource/PVC of this disk name.
-		logf("left existing Template %s/%s in place (golden DV %s)", ns, name, req.DiskName)
+		applyTemplateDataSource(existing, req.DiskName, req.GoldenNamespace)
+		_, err = m.k8s.Put(path, existing)
+		if err != nil {
+			return err
+		}
+		logf("updated Template %s/%s DATA_SOURCE_NAME=%s", ns, name, req.DiskName)
 		return nil
 	}
 	tpl := windowsVMTemplate(ns, name, req.GoldenNamespace, req.DiskName, req.DiskSize)
@@ -629,6 +633,44 @@ func (m *Manager) ensureTemplate(req StartBuildRequest) error {
 	}
 	_, err = m.k8s.Create(fmt.Sprintf("/apis/template.openshift.io/v1/namespaces/%s/templates", ns), tpl)
 	return err
+}
+
+func applyTemplateDataSource(tpl map[string]interface{}, disk, goldenNS string) {
+	params, _ := tpl["parameters"].([]interface{})
+	if params == nil {
+		params = []interface{}{}
+	}
+	foundName, foundNS := false, false
+	for _, raw := range params {
+		p, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		name, _ := p["name"].(string)
+		switch name {
+		case "DATA_SOURCE_NAME":
+			p["value"] = disk
+			foundName = true
+		case "DATA_SOURCE_NAMESPACE":
+			p["value"] = goldenNS
+			foundNS = true
+		}
+	}
+	if !foundName {
+		params = append(params, map[string]interface{}{
+			"name":        "DATA_SOURCE_NAME",
+			"description": "Name of the DataSource to clone",
+			"value":       disk,
+		})
+	}
+	if !foundNS {
+		params = append(params, map[string]interface{}{
+			"name":        "DATA_SOURCE_NAMESPACE",
+			"description": "Namespace of the DataSource",
+			"value":       goldenNS,
+		})
+	}
+	tpl["parameters"] = params
 }
 
 func windowsVMTemplate(ns, name, goldenNS, disk, size string) map[string]interface{} {

@@ -11,8 +11,8 @@ spec:
   displayName: Windows Builder
   description: >-
     Build sysprepped Windows disks for OpenShift Virtualization. Creates CDI
-    DataVolumes (win2k19, win2k25, win11, or a custom name) from an ISO you
-    provide. No Tekton. Community project, not officially supported by Red Hat.
+    DataVolumes from an ISO you provide (names match template DATA_SOURCE_NAME).
+    No Tekton. Community project, not officially supported by Red Hat.
   category: compute
   source: community
   git: https://github.com/OOsemka/oct-windows-builder
@@ -49,3 +49,13 @@ spec:
       openshift: ["4.22"]
       image: quay.io/cjanisze/oct-windows-builder:1.0.1-ocp4.22
       gitRef: v1.0.1
+    - version: "1.0.2"
+      channel: stable
+      openshift: ["4.21"]
+      image: quay.io/cjanisze/oct-windows-builder:1.0.2-ocp4.21
+      gitRef: v1.0.2
+    - version: "1.0.2"
+      channel: stable
+      openshift: ["4.22"]
+      image: quay.io/cjanisze/oct-windows-builder:1.0.2-ocp4.22
+      gitRef: v1.0.2

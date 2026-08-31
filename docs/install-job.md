@@ -21,7 +21,7 @@ The form can override golden-image namespace and StorageClass. Empty StorageClas
    Keys `Autounattend.xml` and `unattend.xml`. Mounted with KubeVirt `volumes[].sysprep.configMap` (floppy that Windows Setup reads).
 
 2. **DataVolume** `wb-iso-<disk>`  
-   `spec.source.http.url` = user ISO URL. Size default 7Gi (ISO). Wait until `Succeeded`.
+   `spec.source.http.url` = user ISO URL. Size default 12Gi. Wait until `Succeeded`.
 
 3. **DataVolume** `wb-install-<disk>`  
    `spec.source.blank`, size from the form (default 60Gi). Wait until `Succeeded` (blank bind).
@@ -44,23 +44,42 @@ The form can override golden-image namespace and StorageClass. Empty StorageClas
 
 8. **DataSource** `<disk>` pointing at that PVC (so CNV Templates that `sourceRef` it keep working).
 
-9. **Template**  
-   Update the selected Template in place when it already targets this DV/DataSource name; otherwise create a small VM Template named by the user.
+9. **Template** (optional)  
+   Default is DataVolume only. If the user picks a flavor template, patch `DATA_SOURCE_NAME` / `DATA_SOURCE_NAMESPACE` on that Template. Custom names create a small VM Template.
 
 ## Autounattend
 
-Recommended XML (editable in the form) is derived from
-[tekton-windows-pipeline](https://github.com/OOsemka/tekton-windows-pipeline)
-and [gitops-demo/win2k19](https://github.com/OOsemka/gitops-demo/tree/main/win2k19):
+Recommended XML (editable in the form; **Use recommended for this version**) is generated per OS family. Sources:
 
-- windowsPE PnP driver paths on the virtio CD (`E:\viostor\<sku>\amd64`, NetKVM, viorng)
-- Wipe disk, GPT/EFI layout, install to C:
-- Public Microsoft **KMS client setup keys** as placeholders (not a lab key; replace with a valid license)
-- Temporary AutoLogon so FirstLogonCommands run
-- Last command: **sysprep /generalize /oobe /shutdown /quiet**
-- Optional: `msiexec` virtio guest tools / QEMU GA if those files exist on the virtio CD
+- Microsoft KMS GVLKs: https://learn.microsoft.com/en-us/windows-server/get-started/kms-client-activation-keys
+- Answer files: https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/update-windows-settings-and-scripts-create-your-own-answer-file-sxs
+- KubeVirt sysprep volume: https://kubevirt.io/user-guide/user_workloads/startup_scripts/
+- virtio-win paths (`E:\viostor\<sku>\amd64`, NetKVM, Balloon): https://github.com/kubevirt/kubevirt-tekton-tasks (windows-efi-installer ConfigMaps) and https://kubevirt.io/2021/Automated-Windows-Installation-With-Tekton-Pipelines.html
 
-Product keys in the sample XML are Microsoft’s published KMS client setup keys, not secrets.
+Per-SKU differences:
+
+| Family | virtio folder | Product key (GVLK) | Image description | Extra |
+| --- | --- | --- | --- | --- |
+| win10 | w10 | Enterprise | Windows 10 Enterprise | BypassNRO |
+| win11 | w11 | Enterprise | Windows 11 Enterprise | LabConfig TPM/Secure Boot bypass + BypassNRO (install VM has TPM; Secure Boot off for virtio) |
+| win2k16 | 2k16 | Datacenter | Windows Server 2016 Datacenter Evaluation | |
+| win2k19 | 2k19 | Datacenter | …2019 Datacenter Evaluation (Desktop Experience) | |
+| win2k22 | 2k22 | Datacenter | …2022 Datacenter Evaluation (Desktop Experience) | |
+| win2k25 | 2k25 then 2k22 fallback | Datacenter | …2025 Datacenter Evaluation (Desktop Experience) | |
+
+All SKUs: GPT/EFI, specialize PnP, FirstLogon virtio MSI + qemu-ga, drop cached unattend, **sysprep /generalize /oobe /shutdown**. No Cloudbase-Init. `WillShowUI OnError` if the eval image name does not match.
+
+## ISO URL suggestions
+
+Microsoft Evaluation Center is canonical. Direct HTTPS (en-US) is pre-filled only when a Microsoft CDN URL exists (HEAD-checked; paths can rotate). Windows 10/11 client eval has **no** stable anonymous ISO — paste a URL the cluster can pull.
+
+- Server 2025: https://www.microsoft.com/en-us/evalcenter/evaluate-windows-server-2025
+- Server 2022: https://www.microsoft.com/en-us/evalcenter/evaluate-windows-server-2022
+- Server 2019: https://www.microsoft.com/en-us/evalcenter/evaluate-windows-server-2019
+- Server 2016: https://www.microsoft.com/en-us/evalcenter/evaluate-windows-server-2016
+- Windows 11: https://www.microsoft.com/en-us/evalcenter/evaluate-windows-11-enterprise
+
+Never invent a lab ISO.
 
 ## Status mapping
 

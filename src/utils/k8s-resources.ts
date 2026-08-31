@@ -63,9 +63,6 @@ export const TEMPLATE_NAMESPACE = 'openshift';
 
 export const PLUGIN_NAMESPACE = 'oct-windows-builder';
 
-export const PRESET_DISKS = ['win2k19', 'win2k25', 'win11'] as const;
-export type PresetDisk = typeof PRESET_DISKS[number];
-
 export type DataVolumeKind = {
   apiVersion?: string;
   kind?: string;
@@ -101,6 +98,12 @@ export type StorageClassKind = {
   };
 };
 
+export type TemplateParameter = {
+  name?: string;
+  value?: string;
+  description?: string;
+};
+
 export type TemplateKind = {
   metadata: {
     name: string;
@@ -109,6 +112,7 @@ export type TemplateKind = {
     annotations?: Record<string, string>;
   };
   objects?: unknown[];
+  parameters?: TemplateParameter[];
 };
 
 type K8sErrShape = {
@@ -188,12 +192,11 @@ export function isDefaultStorageClass(sc: StorageClassKind): boolean {
 }
 
 export function isWindowsTemplate(t: TemplateKind): boolean {
-  const labels = t.metadata.labels || {};
-  const ann = t.metadata.annotations || {};
-  const blob = `${Object.keys(labels).join(' ')} ${Object.values(labels).join(' ')} ${Object.values(ann).join(' ')} ${t.metadata.name}`.toLowerCase();
-  if (blob.includes('windows') || blob.includes('win2k') || blob.includes('win10') || blob.includes('win11')) {
+  const name = (t.metadata.name || '').toLowerCase();
+  if (/^windows(\d+|2k\d+)/.test(name) || /^win(10|11|2k)/.test(name)) {
     return true;
   }
+  const labels = t.metadata.labels || {};
   return Object.keys(labels).some((k) => k.startsWith('os.template.kubevirt.io/win'));
 }
 

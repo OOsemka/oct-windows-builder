@@ -1,53 +1,195 @@
-import { PresetDisk } from './k8s-resources';
+import { normalizeSkuKey } from './windows-skus';
 
-export type WindowsSku = PresetDisk | 'custom';
+/**
+ * Recommended Autounattend.xml for KubeVirt / OpenShift Virtualization golden images.
+ *
+ * Sources (not lab hosts):
+ * - KMS GVLKs: https://learn.microsoft.com/en-us/windows-server/get-started/kms-client-activation-keys
+ * - Answer files: https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/update-windows-settings-and-scripts-create-your-own-answer-file-sxs
+ * - KubeVirt sysprep volume: https://kubevirt.io/user-guide/user_workloads/startup_scripts/
+ * - virtio-win paths (viostor / NetKVM / Balloon, w10 w11 2k16–2k25):
+ *   https://github.com/kubevirt/kubevirt-tekton-tasks (windows-efi-installer ConfigMaps)
+ *   https://kubevirt.io/2021/Automated-Windows-Installation-With-Tekton-Pipelines.html
+ * - Win11 LabConfig + BypassNRO: install VM uses UEFI with Secure Boot off so virtio can load;
+ *   TPM is enabled on the VM spec. BypassNRO:
+ *   https://github.com/kubevirt/kubevirt-tekton-tasks (windows11-autounattend)
+ *
+ * No Cloudbase-Init. FirstLogon ends with sysprep /generalize /oobe /shutdown.
+ * Temporary AutoLogon password is a placeholder — never log it.
+ */
 
-/** Public Microsoft KMS client setup keys (not secrets, not a lab license). Replace with a valid key. */
-const KMS_KEYS: Record<WindowsSku, string> = {
-  win2k19: 'N69G4-B89J2-4G8F4-WWYCC-J464C',
-  win2k25: 'TVRH6-WHNXV-R9WG3-9XRFY-MY832',
-  win11: 'W269N-WFGWX-YVC9B-4J6C9-T83GX',
-  custom: 'W269N-WFGWX-YVC9B-4J6C9-T83GX',
+/** Public Microsoft KMS client setup keys (GVLKs), not secrets or MAKs. */
+const KMS_DATACENTER: Record<string, string> = {
+  win2k16: 'CB7KF-BWN84-R7R2Y-793K2-8XDDG',
+  win2k19: 'WMDGN-G9PQG-XVVXX-R3X43-63DFG',
+  win2k22: 'WX4NM-KYWYW-QJJR4-XV3QB-6VM33',
+  win2k25: 'D764K-2NDRG-47T6Q-P8T8W-YP6DF',
 };
 
-/** virtio-win folder names on a typical virtio-win CD. win2k25 uses 2k22 when 2k25 is absent. */
-export function virtioFolder(sku: WindowsSku): string {
-  switch (sku) {
-    case 'win2k19':
-      return '2k19';
-    case 'win2k25':
-      return '2k22';
+const KMS_ENTERPRISE = 'NPPR9-FWDCX-D2C8J-H872K-2YT43';
+const KMS_PRO = 'W269N-WFGWX-YVC9B-4J6C9-T83GX';
+
+type SkuKind = 'client10' | 'client11' | 'server' | 'generic';
+
+export type AutounattendProfile = {
+  skuId: string;
+  virtioFolders: string[];
+  kmsKey: string;
+  computerName: string;
+  imageDescription: string;
+  kind: SkuKind;
+};
+
+export function virtioFoldersForSku(skuId: string): string[] {
+  const n = normalizeSkuKey(skuId);
+  if (n === 'win11' || n.includes('win11')) return ['w11'];
+  if (n === 'win10' || n.includes('win10')) return ['w10'];
+  if (n.includes('2k25') || n.includes('2025')) return ['2k25', '2k22'];
+  if (n.includes('2k22') || n.includes('2022')) return ['2k22'];
+  if (n.includes('2k19') || n.includes('2019')) return ['2k19'];
+  if (n.includes('2k16') || n.includes('2016')) return ['2k16'];
+  if (n.includes('2k12')) return ['2k12R2'];
+  return ['w10'];
+}
+
+function skuKind(skuId: string): SkuKind {
+  const n = normalizeSkuKey(skuId);
+  if (!n || n === 'custom') return 'generic';
+  if (n === 'win11' || n.includes('win11')) return 'client11';
+  if (n === 'win10' || n.includes('win10')) return 'client10';
+  if (n.includes('2k') || n.includes('server') || n.includes('2016') || n.includes('2019') || n.includes('2022') || n.includes('2025')) {
+    return 'server';
+  }
+  return 'generic';
+}
+
+function kmsKeyFor(skuId: string, kind: SkuKind): string {
+  const n = normalizeSkuKey(skuId);
+  if (kind === 'client10' || kind === 'client11') return KMS_ENTERPRISE;
+  if (KMS_DATACENTER[n]) return KMS_DATACENTER[n];
+  if (n.includes('2k25')) return KMS_DATACENTER.win2k25;
+  if (n.includes('2k22')) return KMS_DATACENTER.win2k22;
+  if (n.includes('2k19')) return KMS_DATACENTER.win2k19;
+  if (n.includes('2k16')) return KMS_DATACENTER.win2k16;
+  if (kind === 'server') return KMS_DATACENTER.win2k22;
+  return KMS_PRO;
+}
+
+function imageDescriptionFor(skuId: string, kind: SkuKind): string {
+  const n = normalizeSkuKey(skuId);
+  switch (n) {
+    case 'win10':
+      return 'Windows 10 Enterprise';
     case 'win11':
-      return 'w11';
+      return 'Windows 11 Enterprise';
+    case 'win2k16':
+      return 'Windows Server 2016 Datacenter Evaluation';
+    case 'win2k19':
+      return 'Windows Server 2019 Datacenter Evaluation (Desktop Experience)';
+    case 'win2k22':
+      return 'Windows Server 2022 Datacenter Evaluation (Desktop Experience)';
+    case 'win2k25':
+      return 'Windows Server 2025 Datacenter Evaluation (Desktop Experience)';
     default:
-      return 'w10';
+      if (kind === 'client11') return 'Windows 11 Enterprise';
+      if (kind === 'client10') return 'Windows 10 Enterprise';
+      return '';
   }
 }
 
-/**
- * Recommended Autounattend.xml for unattended setup + sysprep generalize.
- * Shape follows OOsemka/tekton-windows-pipeline and gitops-demo/win2k19
- * (virtio PnP paths, disk wipe, AutoLogon, FirstLogonCommands sysprep).
- * Temporary AutoLogon password is a placeholder — edit before use. Never log it.
- */
-export function recommendedAutounattend(sku: WindowsSku): string {
-  const folder = virtioFolder(sku);
-  const key = KMS_KEYS[sku];
-  const computer = sku === 'custom' ? 'WindowsVM' : sku;
+function computerNameFor(skuId: string): string {
+  const raw = skuId === 'custom' ? 'WindowsVM' : skuId;
+  const s = raw.replace(/[^A-Za-z0-9-]/g, '').slice(0, 15);
+  return s || 'WindowsVM';
+}
+
+export function profileForSku(skuId: string): AutounattendProfile {
+  const id = skuId.trim() || 'custom';
+  const kind = skuKind(id);
+  return {
+    skuId: id,
+    virtioFolders: virtioFoldersForSku(id),
+    kmsKey: kmsKeyFor(id, kind),
+    computerName: computerNameFor(id),
+    imageDescription: imageDescriptionFor(id, kind),
+    kind,
+  };
+}
+
+function driverPathsXml(folders: string[]): string {
+  const kinds = ['viostor', 'NetKVM', 'Balloon'];
+  let i = 1;
+  const lines: string[] = [];
+  for (const folder of folders) {
+    for (const kind of kinds) {
+      lines.push(`        <PathAndCredentials wcm:action="add" wcm:keyValue="${i}">
+          <Path>E:\\${kind}\\${folder}\\amd64</Path>
+        </PathAndCredentials>`);
+      i += 1;
+    }
+  }
+  return lines.join('\n');
+}
+
+function win11PeCommands(): string {
+  return `      <RunSynchronous>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>1</Order>
+          <Description>Bypass TPM check (VM has TPM; required if firmware check fails)</Description>
+          <Path>cmd /c reg add HKLM\\SYSTEM\\Setup\\LabConfig /v BypassTPMCheck /t REG_DWORD /d 1 /f</Path>
+        </RunSynchronousCommand>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>2</Order>
+          <Description>Bypass Secure Boot check (install VM leaves Secure Boot off for virtio)</Description>
+          <Path>cmd /c reg add HKLM\\SYSTEM\\Setup\\LabConfig /v BypassSecureBootCheck /t REG_DWORD /d 1 /f</Path>
+        </RunSynchronousCommand>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>3</Order>
+          <Description>Bypass RAM check</Description>
+          <Path>cmd /c reg add HKLM\\SYSTEM\\Setup\\LabConfig /v BypassRAMCheck /t REG_DWORD /d 1 /f</Path>
+        </RunSynchronousCommand>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>4</Order>
+          <Description>Bypass Windows 11 network/MSA requirement (BypassNRO)</Description>
+          <Path>cmd /c reg add HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\OOBE /v BypassNRO /t REG_DWORD /d 1 /f</Path>
+        </RunSynchronousCommand>
+      </RunSynchronous>
+`;
+}
+
+function win10PeCommands(): string {
+  return `      <RunSynchronous>
+        <RunSynchronousCommand wcm:action="add">
+          <Order>1</Order>
+          <Description>Bypass network/MSA requirement (BypassNRO)</Description>
+          <Path>cmd /c reg add HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\OOBE /v BypassNRO /t REG_DWORD /d 1 /f</Path>
+        </RunSynchronousCommand>
+      </RunSynchronous>
+`;
+}
+
+function installFromXml(description: string): string {
+  if (!description) return '';
+  return `          <InstallFrom>
+            <MetaData wcm:action="add">
+              <Key>/IMAGE/DESCRIPTION</Key>
+              <Value>${description}</Value>
+            </MetaData>
+          </InstallFrom>
+`;
+}
+
+export function recommendedAutounattend(skuId: string): string {
+  const p = profileForSku(skuId);
+  const drivers = driverPathsXml(p.virtioFolders);
+  const peExtra = p.kind === 'client11' ? win11PeCommands() : p.kind === 'client10' ? win10PeCommands() : '';
+  const installFrom = installFromXml(p.imageDescription);
   return `<?xml version="1.0" encoding="utf-8"?>
 <unattend xmlns="urn:schemas-microsoft-com:unattend">
   <settings pass="windowsPE">
     <component name="Microsoft-Windows-PnpCustomizationsWinPE" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
       <DriverPaths>
-        <PathAndCredentials wcm:action="add" wcm:keyValue="1">
-          <Path>E:\\viostor\\${folder}\\amd64</Path>
-        </PathAndCredentials>
-        <PathAndCredentials wcm:action="add" wcm:keyValue="2">
-          <Path>E:\\NetKVM\\${folder}\\amd64</Path>
-        </PathAndCredentials>
-        <PathAndCredentials wcm:action="add" wcm:keyValue="3">
-          <Path>E:\\viorng\\${folder}\\amd64</Path>
-        </PathAndCredentials>
+${drivers}
       </DriverPaths>
     </component>
     <component name="Microsoft-Windows-International-Core-WinPE" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
@@ -61,7 +203,7 @@ export function recommendedAutounattend(sku: WindowsSku): string {
       <UserLocale>en-US</UserLocale>
     </component>
     <component name="Microsoft-Windows-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-      <DiskConfiguration>
+${peExtra}      <DiskConfiguration>
         <Disk wcm:action="add">
           <DiskID>0</DiskID>
           <WillWipeDisk>true</WillWipeDisk>
@@ -105,11 +247,12 @@ export function recommendedAutounattend(sku: WindowsSku): string {
       </DiskConfiguration>
       <ImageInstall>
         <OSImage>
-          <InstallTo>
+${installFrom}          <InstallTo>
             <DiskID>0</DiskID>
             <PartitionID>3</PartitionID>
           </InstallTo>
           <InstallToAvailablePartition>false</InstallToAvailablePartition>
+          <WillShowUI>OnError</WillShowUI>
         </OSImage>
       </ImageInstall>
       <UserData>
@@ -117,7 +260,7 @@ export function recommendedAutounattend(sku: WindowsSku): string {
         <FullName>Administrator</FullName>
         <Organization></Organization>
         <ProductKey>
-          <Key>${key}</Key>
+          <Key>${p.kmsKey}</Key>
           <WillShowUI>OnError</WillShowUI>
         </ProductKey>
       </UserData>
@@ -134,9 +277,21 @@ export function recommendedAutounattend(sku: WindowsSku): string {
     </component>
   </settings>
   <settings pass="specialize">
+    <component name="Microsoft-Windows-PnpCustomizationsNonWinPE" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+      <DriverPaths>
+${drivers}
+      </DriverPaths>
+    </component>
+    <component name="Microsoft-Windows-International-Core" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+      <InputLocale>0409:00000409</InputLocale>
+      <SystemLocale>en-US</SystemLocale>
+      <UILanguage>en-US</UILanguage>
+      <UILanguageFallback>en-US</UILanguageFallback>
+      <UserLocale>en-US</UserLocale>
+    </component>
     <component name="Microsoft-Windows-Shell-Setup" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
-      <ComputerName>${computer}</ComputerName>
-      <ProductKey>${key}</ProductKey>
+      <ComputerName>${p.computerName}</ComputerName>
+      <ProductKey>${p.kmsKey}</ProductKey>
     </component>
     <component name="Microsoft-Windows-Security-SPP-UX" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
       <SkipAutoActivation>true</SkipAutoActivation>
@@ -192,6 +347,12 @@ export function recommendedAutounattend(sku: WindowsSku): string {
         </SynchronousCommand>
         <SynchronousCommand wcm:action="add">
           <Order>4</Order>
+          <Description>Drop cached unattend so sysprep does not re-apply setup XML</Description>
+          <CommandLine>cmd /c if exist C:\\Windows\\Panther\\unattend.xml move /Y C:\\Windows\\Panther\\unattend.xml C:\\Windows\\Panther\\unattend.install.xml</CommandLine>
+          <RequiresUserInput>false</RequiresUserInput>
+        </SynchronousCommand>
+        <SynchronousCommand wcm:action="add">
+          <Order>5</Order>
           <Description>Sysprep generalize and shutdown (golden image)</Description>
           <CommandLine>cmd /c C:\\Windows\\System32\\Sysprep\\sysprep.exe /generalize /oobe /shutdown /quiet</CommandLine>
           <RequiresUserInput>false</RequiresUserInput>
