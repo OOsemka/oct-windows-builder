@@ -16,23 +16,23 @@ import { normalizeSkuKey } from './windows-skus';
  * - ImageInstall MetaData: /IMAGE/INDEX, /IMAGE/NAME, or /IMAGE/DESCRIPTION
  *   https://learn.microsoft.com/en-us/windows-hardware/customize/desktop/unattend/microsoft-windows-setup-imageinstall-osimage-installfrom-metadata-key
  *
- * Evaluation Center install.wim names do not match retail “Datacenter Evaluation
- * (Desktop Experience)” DESCRIPTION strings. /IMAGE/DESCRIPTION is the long WIM
- * Description (“This option installs the full Windows graphical environment…”),
- * not the Setup picker title. A mismatched DESCRIPTION plus WillShowUI=OnError
- * yields an empty “No images are available” picker. Prefer /IMAGE/INDEX.
+ * Evaluation Center install.wim **NAME** values are internal FLAGS strings
+ * (`Windows Server 2019 SERVERDATACENTER`), not the Setup picker title.
+ * `/IMAGE/DESCRIPTION` matches NAME on this media, not DISPLAYNAME. Feeding
+ * DISPLAYNAME (or a retail title) as DESCRIPTION plus WillShowUI=OnError
+ * yields an empty “No images are available” picker. Prefer `/IMAGE/INDEX`.
  *
  * Typical Microsoft Evaluation Center media (suggested ISO URLs in windows-skus.ts):
  * - Server SERVER_EVAL ISOs (2k16/2k19/2k22/2k25): four images — 1 Standard Core,
  *   2 Standard Desktop Experience, 3 Datacenter Core, 4 Datacenter Desktop Experience.
- *   win2k19 ISO 17763.737…SERVER_EVAL_x64FRE (packer-windows Get-WindowsImage):
- *     1 Windows Server 2019 Standard
- *     2 Windows Server 2019 Standard (Desktop Experience)
- *     3 Windows Server 2019 Datacenter
- *     4 Windows Server 2019 Datacenter (Desktop Experience)
- *   2019 display names omit “Evaluation”; 2016/2025 eval names often include it.
- *   KubeVirt tekton windows2k22 uses /IMAGE/NAME Windows Server 2022 SERVERDATACENTER
- *   (internal FLAGS); INDEX 4 is that Datacenter Desktop image on SERVER_EVAL media.
+ *   Chris’s win2k19 ISO 17763.737…SERVER_EVAL_x64FRE (parsed from install.wim XML):
+ *     1 NAME SERVERSTANDARDCORE     DISPLAYNAME Windows Server 2019 Standard Evaluation
+ *     2 NAME SERVERSTANDARD         DISPLAYNAME Windows Server 2019 Standard Evaluation (Desktop Experience)
+ *     3 NAME SERVERDATACENTERCORE   DISPLAYNAME Windows Server 2019 Datacenter Evaluation
+ *     4 NAME SERVERDATACENTER       DISPLAYNAME Windows Server 2019 Datacenter Evaluation (Desktop Experience)
+ *   DISPLAYNAME includes “Evaluation”; `/IMAGE/NAME` is the SERVER* string.
+ *   KubeVirt tekton windows2k22 uses `/IMAGE/NAME` Windows Server 2022 SERVERDATACENTER
+ *   (same FLAGS); INDEX 4 is Datacenter Desktop on SERVER_EVAL media.
  * - Client Enterprise Evaluation (Win10/11): usually a single image → INDEX 1.
  *
  * No Cloudbase-Init. FirstLogon ends with sysprep /generalize /oobe /shutdown.

@@ -64,7 +64,7 @@ Per-SKU differences:
 | win10 | w10 | Enterprise | 1 (single-image Enterprise Evaluation) | BypassNRO |
 | win11 | w11 | Enterprise | 1 | LabConfig TPM/Secure Boot bypass + BypassNRO (install VM has TPM; Secure Boot off for virtio) |
 | win2k16 | 2k16 | Datacenter | 4 (Datacenter Desktop Experience on SERVER_EVAL) | |
-| win2k19 | 2k19 | Datacenter | 4 | 2019 eval WIM **names** omit “Evaluation” (index 4 is `Windows Server 2019 Datacenter (Desktop Experience)`). Do not use `/IMAGE/DESCRIPTION` with a retail-style title — Setup shows “No images are available.” |
+| win2k19 | 2k19 | Datacenter | 4 | Parsed from Chris’s SERVER_EVAL `install.wim`: index 4 NAME is `Windows Server 2019 SERVERDATACENTER`, DISPLAYNAME is `Windows Server 2019 Datacenter Evaluation (Desktop Experience)`. Do not put DISPLAYNAME in `/IMAGE/DESCRIPTION` — that field matches NAME on this media, so Setup shows “No images are available.” |
 | win2k22 | 2k22 | Datacenter | 4 | |
 | win2k25 | 2k25 then 2k22 fallback | Datacenter | 4 | 2025 eval names often include “Evaluation” |
 
