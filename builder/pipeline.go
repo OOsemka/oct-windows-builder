@@ -321,29 +321,103 @@ func (m *Manager) run(req StartBuildRequest) {
 	m.set(disk, StatusReady, "DataVolume "+disk+" Succeeded")
 }
 
+// Windows Setup + OOBE + sysprep is never a ~7 minute ACPI shutdown. A short
+// Succeeded/Stopped (empty picker, firmware drop, failed unattend) must be
+// Error, not a golden clone. Guest agent or guest OS info means Setup got past
+// WinPE; 8Gi used on the install PVC is the same kind of evidence.
+const (
+	minGuestUptime     = 20 * time.Minute
+	minGuestOSUptime   = 15 * time.Minute
+	minInstallDiskUsed = int64(8) << 30
+)
+
+type vmiWaitState struct {
+	sawRunning   bool
+	sawSucceeded bool
+	sawAgent     bool
+	sawGuestOS   bool
+	runningSince time.Time
+	notFoundN    int
+}
+
+type guestExitEvidence struct {
+	Uptime     time.Duration
+	SawAgent   bool
+	SawGuestOS bool
+	DiskUsed   int64
+}
+
+type waitAction int
+
+const (
+	waitPoll waitAction = iota
+	waitExited
+	waitMissing
+)
+
 func (m *Manager) waitVMI(name string) error {
-	path := fmt.Sprintf("/apis/kubevirt.io/v1/namespaces/%s/virtualmachineinstances/%s", m.workNS, name)
+	vmiPath := fmt.Sprintf("/apis/kubevirt.io/v1/namespaces/%s/virtualmachineinstances/%s", m.workNS, name)
+	vmPath := fmt.Sprintf("/apis/kubevirt.io/v1/namespaces/%s/virtualmachines/%s", m.workNS, name)
 	deadline := time.Now().Add(4 * time.Hour)
 	var last string
+	var st vmiWaitState
 	for time.Now().Before(deadline) {
-		obj, code, err := m.k8s.Get(path)
+		obj, code, err := m.k8s.Get(vmiPath)
 		if err != nil {
 			return err
 		}
 		if code == http.StatusNotFound {
+			st.notFoundN++
+			vm, vmCode, vmErr := m.k8s.Get(vmPath)
+			if vmErr != nil {
+				return vmErr
+			}
+			printable := ""
+			if vm != nil {
+				printable = nestedString(vm, "status", "printableStatus")
+				if st.runningSince.IsZero() {
+					if t := parseK8sTime(nestedString(vm, "metadata", "creationTimestamp")); !t.IsZero() && st.sawRunning {
+						st.runningSince = t
+					}
+				}
+			}
 			last = "NotFound"
+			if printable != "" {
+				last = "NotFound/" + printable
+			}
+			switch interpretVMINotFound(vmCode, printable, st) {
+			case waitExited:
+				if st.runningSince.IsZero() && vm != nil {
+					st.runningSince = parseK8sTime(nestedString(vm, "metadata", "creationTimestamp"))
+				}
+				return m.finishGuestWait(name, st, last)
+			case waitMissing:
+				return fmt.Errorf("install VM %s NotFound", name)
+			}
 			time.Sleep(8 * time.Second)
 			continue
 		}
+		st.notFoundN = 0
+		st.observeVMI(obj)
 		phase := nestedString(obj, "status", "phase")
 		last = phase
 		switch phase {
 		case "Succeeded":
-			return nil
+			st.sawSucceeded = true
+			if st.runningSince.IsZero() {
+				st.runningSince = parseK8sTime(nestedString(obj, "metadata", "creationTimestamp"))
+			}
+			return m.finishGuestWait(name, st, "VMI Succeeded")
 		case "Failed", "Unknown":
 			return fmt.Errorf("VMI %s: %s", phase, conditionMessage(obj))
 		case "Running":
-			if guestAgentConnected(obj) {
+			if !st.sawRunning {
+				st.sawRunning = true
+				if st.runningSince.IsZero() {
+					st.runningSince = time.Now()
+				}
+			}
+			if st.sawAgent {
 				disk := strings.TrimPrefix(name, "wb-install-")
 				m.mu.Lock()
 				already := m.builds[disk] != nil && m.builds[disk].Status == StatusSysprep
@@ -356,6 +430,171 @@ func (m *Manager) waitVMI(name string) error {
 		time.Sleep(15 * time.Second)
 	}
 	return fmt.Errorf("timeout waiting for VMI Succeeded (last %s)", last)
+}
+
+func (s *vmiWaitState) observeVMI(obj map[string]interface{}) {
+	if obj == nil {
+		return
+	}
+	if guestAgentConnected(obj) {
+		s.sawAgent = true
+	}
+	if guestOSPresent(obj) {
+		s.sawGuestOS = true
+	}
+	if t := vmiRunningSince(obj); !t.IsZero() {
+		s.sawRunning = true
+		if s.runningSince.IsZero() || t.Before(s.runningSince) {
+			s.runningSince = t
+		}
+	}
+}
+
+func (m *Manager) finishGuestWait(name string, st vmiWaitState, why string) error {
+	up := time.Duration(0)
+	if !st.runningSince.IsZero() {
+		up = time.Since(st.runningSince)
+	}
+	ev := guestExitEvidence{
+		Uptime:     up,
+		SawAgent:   st.sawAgent,
+		SawGuestOS: st.sawGuestOS,
+		DiskUsed:   m.installDiskUsedBytes(name),
+	}
+	if err := evaluateGuestExit(ev); err != nil {
+		return err
+	}
+	logf("guest exited after %s (%s); proceeding to clone", up.Round(time.Second), why)
+	return nil
+}
+
+func evaluateGuestExit(e guestExitEvidence) error {
+	if e.SawAgent {
+		return nil
+	}
+	if e.DiskUsed >= minInstallDiskUsed {
+		return nil
+	}
+	if e.SawGuestOS && e.Uptime >= minGuestOSUptime {
+		return nil
+	}
+	if e.Uptime >= minGuestUptime {
+		return nil
+	}
+	u := e.Uptime.Round(time.Second)
+	if u < 0 {
+		u = 0
+	}
+	return fmt.Errorf("guest shut down before install finished (uptime %s)", u)
+}
+
+func interpretVMINotFound(vmCode int, printable string, st vmiWaitState) waitAction {
+	if st.sawSucceeded {
+		return waitExited
+	}
+	if vmCode == http.StatusNotFound {
+		if st.sawRunning {
+			return waitExited
+		}
+		if st.notFoundN >= 15 {
+			return waitMissing
+		}
+		return waitPoll
+	}
+	switch printable {
+	case "Stopped":
+		return waitExited
+	case "Starting", "Running", "WaitingForVolumeBinding", "Migrating", "Paused", "Stopping", "Provisioning":
+		return waitPoll
+	}
+	if st.sawRunning && st.notFoundN >= 3 {
+		return waitExited
+	}
+	return waitPoll
+}
+
+func guestOSPresent(obj map[string]interface{}) bool {
+	return nestedString(obj, "status", "guestOSInfo", "name") != "" ||
+		nestedString(obj, "status", "guestOSInfo", "prettyName") != "" ||
+		nestedString(obj, "status", "guestOSInfo", "id") != ""
+}
+
+func vmiRunningSince(obj map[string]interface{}) time.Time {
+	st, _ := obj["status"].(map[string]interface{})
+	if st == nil {
+		return time.Time{}
+	}
+	if pts, ok := st["phaseTransitionTimestamps"].([]interface{}); ok {
+		for _, raw := range pts {
+			m, _ := raw.(map[string]interface{})
+			if m == nil {
+				continue
+			}
+			ph, _ := m["phase"].(string)
+			if ph != "Running" {
+				continue
+			}
+			if t := parseK8sTime(fmt.Sprint(m["phaseTransitionTimestamp"])); !t.IsZero() {
+				return t
+			}
+		}
+	}
+	if t := parseK8sTime(fmt.Sprint(st["startTimestamp"])); !t.IsZero() {
+		return t
+	}
+	return time.Time{}
+}
+
+func parseK8sTime(s string) time.Time {
+	s = strings.TrimSpace(s)
+	if s == "" || s == "<nil>" {
+		return time.Time{}
+	}
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
+		if t, err := time.Parse(layout, s); err == nil {
+			return t
+		}
+	}
+	return time.Time{}
+}
+
+func (m *Manager) installDiskUsedBytes(installName string) int64 {
+	if m.k8s == nil {
+		return 0
+	}
+	path := fmt.Sprintf("/api/v1/namespaces/%s/persistentvolumeclaims/%s", m.workNS, installName)
+	obj, code, err := m.k8s.Get(path)
+	if err != nil || code == http.StatusNotFound || obj == nil {
+		return 0
+	}
+	ann := nestedMap(obj, "metadata", "annotations")
+	if ann == nil {
+		return 0
+	}
+	// Actual content size if a CSI/CDI annotation provides it. Do not use
+	// status.capacity — a blank DV is already the full request (e.g. 60Gi).
+	for _, k := range []string{
+		"cdi.kubevirt.io/storage.allocatedSize",
+		"cdi.kubevirt.io/storage.usedSize",
+	} {
+		raw, _ := ann[k].(string)
+		if n := parseByteQuantity(raw); n >= minInstallDiskUsed {
+			return n
+		}
+	}
+	return 0
+}
+
+func parseByteQuantity(s string) int64 {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0
+	}
+	var n int64
+	if _, err := fmt.Sscanf(s, "%d", &n); err == nil && n > 0 {
+		return n
+	}
+	return 0
 }
 
 func (m *Manager) dvPath(ns, name string) string {
@@ -503,6 +742,12 @@ func (m *Manager) ensureInstallVM(vmName, isoName, sysprepName string, req Start
 		time.Sleep(3 * time.Second)
 	}
 
+	vm := installVMManifest(m.workNS, vmName, isoName, sysprepName, req)
+	_, err = m.k8s.Create(fmt.Sprintf("/apis/kubevirt.io/v1/namespaces/%s/virtualmachines", m.workNS), vm)
+	return err
+}
+
+func installVMManifest(ns, vmName, isoName, sysprepName string, req StartBuildRequest) map[string]interface{} {
 	disks := installVMDisks(req.VirtioImage)
 	volumes := []interface{}{
 		map[string]interface{}{
@@ -527,12 +772,12 @@ func (m *Manager) ensureInstallVM(vmName, isoName, sysprepName string, req Start
 		"configMap": map[string]interface{}{"name": sysprepName},
 	})
 
-	vm := map[string]interface{}{
+	return map[string]interface{}{
 		"apiVersion": "kubevirt.io/v1",
 		"kind":       "VirtualMachine",
 		"metadata": map[string]interface{}{
 			"name":      vmName,
-			"namespace": m.workNS,
+			"namespace": ns,
 			"labels": map[string]interface{}{
 				"app.kubernetes.io/part-of": "oct-windows-builder",
 				"app":                       "windows-install",
@@ -547,6 +792,9 @@ func (m *Manager) ensureInstallVM(vmName, isoName, sysprepName string, req Start
 					},
 				},
 				"spec": map[string]interface{}{
+					// RWO install PVC cannot LiveMigrate; cluster default LiveMigrate
+					// produced a Migrated warning and tore the guest down mid-Setup.
+					"evictionStrategy": "None",
 					"domain": map[string]interface{}{
 						"cpu": map[string]interface{}{"cores": req.Cores},
 						"firmware": map[string]interface{}{
@@ -581,8 +829,6 @@ func (m *Manager) ensureInstallVM(vmName, isoName, sysprepName string, req Start
 			},
 		},
 	}
-	_, err = m.k8s.Create(fmt.Sprintf("/apis/kubevirt.io/v1/namespaces/%s/virtualmachines", m.workNS), vm)
-	return err
 }
 
 // installVMDisks: empty SATA disk bootOrder 1 (firmware skips until Setup

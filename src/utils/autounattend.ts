@@ -5,11 +5,10 @@ import { normalizeSkuKey } from './windows-skus';
  *
  * Working reference (no Argo CD / Tekton in this plugin):
  * https://github.com/OOsemka/gitops-demo/tree/main/win2k19
- * That tree’s Autounattend has **no ProductKey**, ImageInstall `/IMAGE/INDEX` only
- * (they use 2 = Standard Desktop), and the answer file is a ConfigMap CD key
- * `autounattend.xml` (not a KubeVirt sysprep volume). CNV windows-efi-installer
- * windows2k22 also omits ProductKey and selects `/IMAGE/NAME`
- * `Windows Server 2022 SERVERDATACENTER`.
+ * That tree’s Autounattend has **no ProductKey**, ImageInstall `/IMAGE/INDEX`
+ * **2** (Standard Desktop Experience) only — no `/IMAGE/NAME`. The answer file
+ * is a ConfigMap CD key `autounattend.xml` (not a KubeVirt sysprep volume).
+ * INDEX 2 + NAME `SERVERDATACENTER` conflict; do not combine them.
  *
  * Other sources:
  * - Answer files: https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/update-windows-settings-and-scripts-create-your-own-answer-file-sxs
@@ -17,7 +16,7 @@ import { normalizeSkuKey } from './windows-skus';
  * - virtio-win paths (viostor / NetKVM / Balloon, w10 w11 2k16–2k25):
  *   https://github.com/kubevirt/kubevirt-tekton-tasks (windows-efi-installer ConfigMaps)
  * - Win11 LabConfig + BypassNRO
- * - ImageInstall MetaData: /IMAGE/INDEX, /IMAGE/NAME
+ * - ImageInstall MetaData: /IMAGE/INDEX (GitOps); optional /IMAGE/NAME on retail WIMs only
  *   https://learn.microsoft.com/en-us/windows-hardware/customize/desktop/unattend/microsoft-windows-setup-imageinstall-osimage-installfrom-metadata-key
  *
  * Evaluation Center install.wim **NAME** values are internal FLAGS strings
@@ -52,7 +51,7 @@ export type AutounattendProfile = {
   computerName: string;
   /** /IMAGE/INDEX for typical Evaluation Center media. */
   imageIndex: string;
-  /** /IMAGE/NAME (WIM NAME / FLAGS), server SKUs only. */
+  /** /IMAGE/NAME (WIM NAME / FLAGS). Empty on recommended eval XML (INDEX only). */
   imageName: string;
   kind: SkuKind;
 };
@@ -81,23 +80,17 @@ function skuKind(skuId: string): SkuKind {
 }
 
 /**
- * /IMAGE/INDEX on typical Evaluation Center ISOs. Server 4-edition SERVER_EVAL
- * media uses 4 for Datacenter Desktop Experience (CNV Datacenter golden). GitOps
- * win2k19 used 2 (Standard Desktop) on the same four-image WIM.
+ * /IMAGE/INDEX on typical Evaluation Center ISOs. GitOps win2k19 uses **2**
+ * (Standard Desktop Experience) on four-image SERVER_EVAL media. INDEX 4
+ * (Datacenter Desktop) is not the proven selector for this plugin.
  */
 function imageIndexFor(_skuId: string, kind: SkuKind): string {
-  if (kind === 'server') return '4';
+  if (kind === 'server') return '2';
   return '1';
 }
 
-/** WIM NAME (not DISPLAYNAME) for Datacenter Desktop on SERVER_EVAL media. */
-function imageNameFor(skuId: string, kind: SkuKind): string {
-  if (kind !== 'server') return '';
-  const n = normalizeSkuKey(skuId);
-  if (n.includes('2k25') || n.includes('2025')) return 'Windows Server 2025 SERVERDATACENTER';
-  if (n.includes('2k22') || n.includes('2022')) return 'Windows Server 2022 SERVERDATACENTER';
-  if (n.includes('2k19') || n.includes('2019')) return 'Windows Server 2019 SERVERDATACENTER';
-  if (n.includes('2k16') || n.includes('2016')) return 'Windows Server 2016 SERVERDATACENTER';
+/** Recommended eval XML is INDEX only — do not emit /IMAGE/NAME. */
+function imageNameFor(_skuId: string, _kind: SkuKind): string {
   return '';
 }
 
