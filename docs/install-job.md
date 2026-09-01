@@ -42,7 +42,7 @@ The form can override golden-image namespace and StorageClass. Empty StorageClas
 6. **Delete** the VM (keep the install PVC).
 
 7. **DataVolume** `<disk>` (e.g. `win2k19`) in the golden namespace  
-   `spec.source.pvc` from the install PVC. Wait until `Succeeded`. If a DV with that name already exists, it is deleted **after** the install disk is ready, then recreated (short unavailability window; documented in the UI).
+   `spec.source.pvc` from the install PVC. Wait until `Succeeded`. If a DV with that name already exists, it is deleted **after** the install disk is ready, then recreated (short unavailability window; documented in the UI). CDI’s clone webhook requires `create` on `datavolumes/source` in the **source** (work) namespace; the install Role/ClusterRole grants that (parent `datavolumes` does not).
 
 8. **DataSource** `<disk>` pointing at that PVC (so CNV Templates that `sourceRef` it keep working).
 

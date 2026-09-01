@@ -30,6 +30,7 @@ The builder ServiceAccount is **not** cluster-admin. It can:
 | API | Verbs |
 | --- | --- |
 | `datavolumes`, `datasources` (CDI) | get, list, watch, create, update, patch, delete |
+| `datavolumes/source` (CDI clone; ClusterRole + work-NS Role) | create |
 | `virtualmachines`, `virtualmachineinstances` (KubeVirt) | get, list, watch, create, update, patch, delete |
 | `templates` (`template.openshift.io`) | get, list, watch, create, update, patch |
 | `configmaps`, `persistentvolumeclaims` | get, list, watch, create, update, patch, delete |

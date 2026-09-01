@@ -68,7 +68,7 @@ Allowed product identity: plugin ID/namespace `oct-windows-builder`, CNV namespa
 
 ## Builder RBAC (not cluster-admin)
 
-The builder ServiceAccount can get/list/watch/create/update/patch/delete DataVolumes, DataSources, VirtualMachines, VirtualMachineInstances, ConfigMaps, and PersistentVolumeClaims; get/list/watch/create/update/patch Templates; get/list StorageClasses; and in `oct-windows-builder` create Jobs/read pods (ISO El Torito patch). It cannot manage unrelated cluster-scoped resources. Document this in README. Do not log BMC passwords, ISO URL userinfo, Autounattend passwords, or kube tokens.
+The builder ServiceAccount can get/list/watch/create/update/patch/delete DataVolumes, DataSources, VirtualMachines, VirtualMachineInstances, ConfigMaps, and PersistentVolumeClaims; create `datavolumes/source` (CDI cross-namespace clone; parent `datavolumes` does not imply the subresource); get/list/watch/create/update/patch Templates; get/list StorageClasses; and in `oct-windows-builder` create Jobs/read pods (ISO El Torito patch) plus `datavolumes/source` create in that work namespace. It cannot manage unrelated cluster-scoped resources. Document this in README. Do not log BMC passwords, ISO URL userinfo, Autounattend passwords, or kube tokens.
 
 ## Catalog tile
 
