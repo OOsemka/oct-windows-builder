@@ -321,13 +321,12 @@ func (m *Manager) run(req StartBuildRequest) {
 	m.set(disk, StatusReady, "DataVolume "+disk+" Succeeded")
 }
 
-// Windows Setup + OOBE + sysprep is never a ~7 minute ACPI shutdown. A short
-// Succeeded/Stopped (empty picker, firmware drop, failed unattend) must be
-// Error, not a golden clone. Guest agent or guest OS info means Setup got past
-// WinPE; 8Gi used on the install PVC is the same kind of evidence.
+// Unattended Setup + sysprep often ACPI-shuts down in ~7 minutes (WinPE →
+// copy → sysprep → Server Manager → shutdown). That is Ready, not Error.
+// Reject never-booted, empty picker, and immediate crash with no guest OS,
+// disk growth, ACPI-after-running, or a few minutes of a running VMI.
 const (
-	minGuestUptime     = 20 * time.Minute
-	minGuestOSUptime   = 15 * time.Minute
+	minGuestUptime     = 5 * time.Minute
 	minInstallDiskUsed = int64(8) << 30
 )
 
@@ -341,10 +340,12 @@ type vmiWaitState struct {
 }
 
 type guestExitEvidence struct {
-	Uptime     time.Duration
-	SawAgent   bool
-	SawGuestOS bool
-	DiskUsed   int64
+	Uptime       time.Duration
+	SawAgent     bool
+	SawGuestOS   bool
+	SawSucceeded bool
+	SawRunning   bool
+	DiskUsed     int64
 }
 
 type waitAction int
@@ -456,10 +457,12 @@ func (m *Manager) finishGuestWait(name string, st vmiWaitState, why string) erro
 		up = time.Since(st.runningSince)
 	}
 	ev := guestExitEvidence{
-		Uptime:     up,
-		SawAgent:   st.sawAgent,
-		SawGuestOS: st.sawGuestOS,
-		DiskUsed:   m.installDiskUsedBytes(name),
+		Uptime:       up,
+		SawAgent:     st.sawAgent,
+		SawGuestOS:   st.sawGuestOS,
+		SawSucceeded: st.sawSucceeded,
+		SawRunning:   st.sawRunning,
+		DiskUsed:     m.installDiskUsedBytes(name),
 	}
 	if err := evaluateGuestExit(ev); err != nil {
 		return err
@@ -475,10 +478,14 @@ func evaluateGuestExit(e guestExitEvidence) error {
 	if e.DiskUsed >= minInstallDiskUsed {
 		return nil
 	}
-	if e.SawGuestOS && e.Uptime >= minGuestOSUptime {
+	if e.SawGuestOS {
 		return nil
 	}
-	if e.Uptime >= minGuestUptime {
+	// VMI Succeeded is guest ACPI shutdown (sysprep /shutdown), often ~7m.
+	if e.SawSucceeded {
+		return nil
+	}
+	if e.SawRunning && e.Uptime >= minGuestUptime {
 		return nil
 	}
 	u := e.Uptime.Round(time.Second)

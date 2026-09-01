@@ -56,21 +56,28 @@ func TestSysprepAnswerFiles(t *testing.T) {
 }
 
 func TestEvaluateGuestExit(t *testing.T) {
-	tooShort := evaluateGuestExit(guestExitEvidence{Uptime: 7 * time.Minute})
+	tooShort := evaluateGuestExit(guestExitEvidence{Uptime: 30 * time.Second, SawRunning: true})
 	if tooShort == nil || !strings.Contains(tooShort.Error(), "guest shut down before install finished") {
-		t.Fatalf("7m failed Setup must be Error, got %v", tooShort)
+		t.Fatalf("immediate crash with no guest OS must be Error, got %v", tooShort)
 	}
-	if err := evaluateGuestExit(guestExitEvidence{Uptime: 45 * time.Minute}); err != nil {
+	neverBooted := evaluateGuestExit(guestExitEvidence{Uptime: 7 * time.Minute})
+	if neverBooted == nil {
+		t.Fatal("uptime without a running VMI must be Error")
+	}
+	if err := evaluateGuestExit(guestExitEvidence{Uptime: 7 * time.Minute, SawRunning: true, SawSucceeded: true}); err != nil {
+		t.Fatalf("ACPI after a ~7m sysprep must clone: %v", err)
+	}
+	if err := evaluateGuestExit(guestExitEvidence{Uptime: 7 * time.Minute, SawRunning: true}); err != nil {
+		t.Fatalf("Stopped after a running guest (~7m) must clone: %v", err)
+	}
+	if err := evaluateGuestExit(guestExitEvidence{Uptime: 45 * time.Minute, SawRunning: true}); err != nil {
 		t.Fatalf("long uptime should clone: %v", err)
 	}
 	if err := evaluateGuestExit(guestExitEvidence{Uptime: 3 * time.Minute, SawAgent: true}); err != nil {
 		t.Fatalf("guest agent means FirstLogon ran: %v", err)
 	}
-	if err := evaluateGuestExit(guestExitEvidence{Uptime: 16 * time.Minute, SawGuestOS: true}); err != nil {
-		t.Fatalf("guest OS after 15m is Setup evidence: %v", err)
-	}
-	if err := evaluateGuestExit(guestExitEvidence{Uptime: 2 * time.Minute, SawGuestOS: true}); err == nil {
-		t.Fatal("guest OS with 2m uptime is still too short")
+	if err := evaluateGuestExit(guestExitEvidence{Uptime: 2 * time.Minute, SawGuestOS: true}); err != nil {
+		t.Fatalf("guest OS is Setup evidence: %v", err)
 	}
 	if err := evaluateGuestExit(guestExitEvidence{Uptime: time.Minute, DiskUsed: minInstallDiskUsed}); err != nil {
 		t.Fatalf("disk growth is Setup evidence: %v", err)

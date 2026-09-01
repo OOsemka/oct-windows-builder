@@ -37,7 +37,7 @@ The form can override golden-image namespace and StorageClass. Empty StorageClas
    - `evictionStrategy: None` (RWO install PVC cannot LiveMigrate)
 
 5. **Wait** for the guest to power off after sysprep  
-   Autounattend FirstLogonCommands run `sysprep.exe /generalize /oobe /shutdown /quiet`. A successful generalize ends in ACPI shutdown → VMI `Succeeded` (often briefly) or VM `Stopped` / VMI NotFound. Treat `Succeeded` as “guest exited” immediately — do **not** poll 4h on NotFound. If the guest was up for less than ~20 minutes and there is no guest-agent / guest-OS / disk-growth evidence, mark **Error** (`guest shut down before install finished`) instead of cloning a failed Setup.
+   Autounattend FirstLogonCommands run `sysprep.exe /generalize /oobe /shutdown /quiet`. A successful generalize ends in ACPI shutdown → VMI `Succeeded` (often briefly, often ~7 minutes) or VM `Stopped` / VMI NotFound. Treat `Succeeded` as “guest exited” immediately — do **not** poll 4h on NotFound. ACPI after a running VMI, guest agent, guest OS, or disk growth is **Ready**. Never-booted, empty picker, or an immediate crash with none of that evidence is **Error** (`guest shut down before install finished`).
 
 6. **Delete** the VM (keep the install PVC).
 
