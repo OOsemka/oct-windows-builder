@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -232,6 +233,9 @@ func (m *Manager) run(req StartBuildRequest) {
 	installName := "wb-install-" + disk
 	sysprepName := "wb-sysprep-" + disk
 
+	m.set(disk, StatusPending, "Preflight cleanup")
+	m.preflightCleanup(disk)
+
 	m.set(disk, StatusPending, "Creating Autounattend ConfigMap")
 	if err := m.ensureSysprepCM(sysprepName, req.Autounattend); err != nil {
 		m.set(disk, StatusError, err.Error())
@@ -271,13 +275,14 @@ func (m *Manager) run(req StartBuildRequest) {
 	}
 
 	m.set(disk, StatusPending, "Creating install VM")
+	vmCreatedAfter := time.Now()
 	if err := m.ensureInstallVM(installName, isoName, sysprepName, req); err != nil {
 		m.set(disk, StatusError, err.Error())
 		return
 	}
 
 	m.set(disk, StatusInstalling, "Windows Setup running (unattended)")
-	if err := m.waitVMI(installName); err != nil {
+	if err := m.waitVMI(installName, vmCreatedAfter); err != nil {
 		m.set(disk, StatusError, err.Error())
 		return
 	}
@@ -331,6 +336,55 @@ func (m *Manager) run(req StartBuildRequest) {
 	m.set(disk, StatusReady, "DataVolume "+disk+" Succeeded")
 }
 
+// preflightCleanup removes leftover VMs, VMIs, and virt-launcher pods from a
+// prior build of the same edition. Without this, waitVMI can observe a stale
+// stopped VMI from a previous run in the same instant the new VM is created and
+// mistake it for the current build shutting down (the 1.0.12 race condition).
+func (m *Manager) preflightCleanup(disk string) {
+	installName := "wb-install-" + disk
+	logf("preflight cleanup for %s", installName)
+
+	vmPath := fmt.Sprintf("/apis/kubevirt.io/v1/namespaces/%s/virtualmachines/%s", m.workNS, installName)
+	vmiPath := fmt.Sprintf("/apis/kubevirt.io/v1/namespaces/%s/virtualmachineinstances/%s", m.workNS, installName)
+
+	_ = m.k8s.Delete(vmPath)
+	_ = m.k8s.Delete(vmiPath)
+
+	sel := url.QueryEscape("kubevirt.io/domain=" + installName)
+	podsObj, _, _ := m.k8s.Get(fmt.Sprintf("/api/v1/namespaces/%s/pods?labelSelector=%s", m.workNS, sel))
+	if podsObj != nil {
+		items, _ := podsObj["items"].([]interface{})
+		for _, raw := range items {
+			pod, _ := raw.(map[string]interface{})
+			podName := nestedString(pod, "metadata", "name")
+			if podName != "" {
+				_ = m.k8s.Delete(fmt.Sprintf("/api/v1/namespaces/%s/pods/%s", m.workNS, podName))
+			}
+		}
+	}
+
+	cmPath := fmt.Sprintf("/api/v1/namespaces/%s/configmaps/wb-build-%s", m.workNS, disk)
+	cmObj, cmCode, _ := m.k8s.Get(cmPath)
+	if cmObj != nil && cmCode != http.StatusNotFound {
+		labels := nestedMap(cmObj, "metadata", "labels")
+		status, _ := labels["oct-windows-builder/status"].(string)
+		if status == string(StatusError) {
+			_ = m.k8s.Delete(cmPath)
+		}
+	}
+
+	deadline := time.Now().Add(3 * time.Minute)
+	for time.Now().Before(deadline) {
+		_, vmCode, _ := m.k8s.Get(vmPath)
+		_, vmiCode, _ := m.k8s.Get(vmiPath)
+		if vmCode == http.StatusNotFound && vmiCode == http.StatusNotFound {
+			return
+		}
+		time.Sleep(3 * time.Second)
+	}
+	logf("preflight cleanup: timed out waiting for stale resources for %s", installName)
+}
+
 // Unattended Setup + a *completed* sysprep /generalize often ACPI-shuts down
 // after FirstLogon (qemu-ga connected, then sysprep). A ~7 minute ACPI with no
 // guest agent is not proof of generalize — that cloned an unsealed disk.
@@ -366,7 +420,7 @@ const (
 	waitMissing
 )
 
-func (m *Manager) waitVMI(name string) error {
+func (m *Manager) waitVMI(name string, vmCreatedAfter time.Time) error {
 	vmiPath := fmt.Sprintf("/apis/kubevirt.io/v1/namespaces/%s/virtualmachineinstances/%s", m.workNS, name)
 	vmPath := fmt.Sprintf("/apis/kubevirt.io/v1/namespaces/%s/virtualmachines/%s", m.workNS, name)
 	deadline := time.Now().Add(4 * time.Hour)
@@ -383,6 +437,17 @@ func (m *Manager) waitVMI(name string) error {
 			if vmErr != nil {
 				return vmErr
 			}
+
+			// Ignore a stale VM from a prior build that hasn't been fully GC'd.
+			if vm != nil && !vmCreatedAfter.IsZero() {
+				vmCreated := parseK8sTime(nestedString(vm, "metadata", "creationTimestamp"))
+				if !vmCreated.IsZero() && vmCreated.Before(vmCreatedAfter) {
+					logf("ignoring stale VM %s (created %s, build started %s)", name, vmCreated.Format(time.RFC3339), vmCreatedAfter.Format(time.RFC3339))
+					time.Sleep(5 * time.Second)
+					continue
+				}
+			}
+
 			printable := ""
 			if vm != nil {
 				printable = nestedString(vm, "status", "printableStatus")
@@ -409,6 +474,15 @@ func (m *Manager) waitVMI(name string) error {
 			continue
 		}
 		st.notFoundN = 0
+
+		// Ignore a stale VMI from a prior build that hasn't been fully GC'd.
+		vmiCreated := parseK8sTime(nestedString(obj, "metadata", "creationTimestamp"))
+		if !vmCreatedAfter.IsZero() && !vmiCreated.IsZero() && vmiCreated.Before(vmCreatedAfter) {
+			logf("ignoring stale VMI %s (created %s, build started %s)", name, vmiCreated.Format(time.RFC3339), vmCreatedAfter.Format(time.RFC3339))
+			time.Sleep(5 * time.Second)
+			continue
+		}
+
 		st.observeVMI(obj)
 		phase := nestedString(obj, "status", "phase")
 		last = phase
