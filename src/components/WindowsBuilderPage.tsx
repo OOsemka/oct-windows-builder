@@ -57,11 +57,16 @@ import {
   virtioImageFromTemplate,
 } from '../utils/k8s-resources';
 import {
+  CONSUMER_EDITIONS,
+  ConsumerEdition,
+  DEFAULT_CONSUMER_EDITION_INDEX,
+  IsoType,
   defaultDiskSizeForSku,
   editionTitle,
   groupWindowsFamilies,
   installCoresForSku,
   installMemoryForSku,
+  isClientSku,
   isoHintForSku,
   preferredTemplateRef,
   templateRefOf,
@@ -257,6 +262,8 @@ const WindowsBuilderPageInner: FC = () => {
   const [storageClass, setStorageClass] = useState('');
   const [diskSize, setDiskSize] = useState('60Gi');
   const [diskSizeTouched, setDiskSizeTouched] = useState(false);
+  const [isoType, setIsoType] = useState<IsoType>('eval');
+  const [editionIndex, setEditionIndex] = useState(DEFAULT_CONSUMER_EDITION_INDEX);
   const [xml, setXml] = useState('');
   const [xmlTouched, setXmlTouched] = useState(false);
   const [templateAction, setTemplateAction] = useState<TemplateAction>('none');
@@ -282,6 +289,8 @@ const WindowsBuilderPageInner: FC = () => {
   const autounattendSku = sku === CUSTOM_SKU ? customDisk.trim() || CUSTOM_SKU : sku || CUSTOM_SKU;
   const diskName = sku === CUSTOM_SKU ? customDisk.trim() : sku;
   const isoHint = isoHintForSku(sku === CUSTOM_SKU ? CUSTOM_SKU : sku);
+  const isClient = isClientSku(sku) && sku !== CUSTOM_SKU;
+  const showEditionPicker = isClient && isoType === 'consumer';
   const familyTemplates = selectedFamily?.templates || [];
   const editionSummary = sku === CUSTOM_SKU
     ? customDisk.trim() || t('Custom')
@@ -352,8 +361,8 @@ const WindowsBuilderPageInner: FC = () => {
 
   useEffect(() => {
     if (xmlTouched || !sku) return;
-    setXml(recommendedAutounattend(autounattendSku));
-  }, [sku, customDisk, xmlTouched, autounattendSku]);
+    setXml(recommendedAutounattend(autounattendSku, isoType, isoType === 'consumer' ? editionIndex : undefined));
+  }, [sku, customDisk, xmlTouched, autounattendSku, isoType, editionIndex]);
 
   useEffect(() => {
     if (isoTouched || !sku) return;
@@ -436,6 +445,8 @@ const WindowsBuilderPageInner: FC = () => {
     setXmlTouched(false);
     setIsoTouched(false);
     setDiskSizeTouched(false);
+    setIsoType('eval');
+    setEditionIndex(DEFAULT_CONSUMER_EDITION_INDEX);
     setStatus(null);
     setMaxStep((cur) => (STEP_ORDER.indexOf('iso') > STEP_ORDER.indexOf(cur) ? 'iso' : cur));
     if (next !== CUSTOM_SKU) setFocus('iso');
@@ -652,12 +663,70 @@ const WindowsBuilderPageInner: FC = () => {
               <WizardSection
                 n={2}
                 title={t('ISO')}
-                summary={isoReady ? isoHost(isoURL) : undefined}
+                summary={isoReady
+                  ? showEditionPicker
+                    ? `${CONSUMER_EDITIONS.find((e) => e.index === editionIndex)?.label || 'Pro'} \u2014 ${isoHost(isoURL)}`
+                    : isoHost(isoURL)
+                  : undefined}
                 open={focus === 'iso'}
                 unlocked={unlock.iso}
                 done={isoReady}
                 onOpen={() => openStep('iso')}
               >
+                {isClient ? (
+                  <FormGroup label={t('ISO type')} fieldId="wb-iso-type">
+                    <Radio
+                      id="wb-iso-type-eval"
+                      name="wb-iso-type"
+                      label={t('Enterprise Evaluation')}
+                      description={t('Free evaluation ISO from Microsoft. No product key required.')}
+                      isChecked={isoType === 'eval'}
+                      onChange={() => {
+                        setIsoType('eval');
+                        setXmlTouched(false);
+                      }}
+                    />
+                    <Radio
+                      id="wb-iso-type-consumer"
+                      name="wb-iso-type"
+                      label={t('Consumer / Retail')}
+                      description={t('Multi-edition ISO from microsoft.com. Select an edition below.')}
+                      isChecked={isoType === 'consumer'}
+                      onChange={() => {
+                        setIsoType('consumer');
+                        setXmlTouched(false);
+                      }}
+                    />
+                  </FormGroup>
+                ) : null}
+                {showEditionPicker ? (
+                  <FormGroup label={t('Windows edition')} fieldId="wb-edition">
+                    <FormSelect
+                      id="wb-edition"
+                      value={String(editionIndex)}
+                      onChange={(_e, v) => {
+                        setEditionIndex(Number(v));
+                        setXmlTouched(false);
+                      }}
+                      aria-label={t('Windows edition')}
+                    >
+                      {CONSUMER_EDITIONS.map((ed: ConsumerEdition) => (
+                        <FormSelectOption
+                          key={ed.index}
+                          value={String(ed.index)}
+                          label={ed.label}
+                        />
+                      ))}
+                    </FormSelect>
+                    <FormHelperText>
+                      <HelperText>
+                        <HelperTextItem>
+                          {t('Standard consumer ISO edition. Pro is recommended for general use.')}
+                        </HelperTextItem>
+                      </HelperText>
+                    </FormHelperText>
+                  </FormGroup>
+                ) : null}
                 <FormGroup label={t('Windows ISO URL')} fieldId="wb-iso" isRequired>
                   <TextInput
                     id="wb-iso"
@@ -686,8 +755,24 @@ const WindowsBuilderPageInner: FC = () => {
                   ) : null}
                   <FormHelperText>
                     <HelperText>
-                      <HelperTextItem>{t(isoHint.helper)}</HelperTextItem>
-                      {isoHint.evalCenter ? (
+                      <HelperTextItem>
+                        {showEditionPicker
+                          ? t('Paste the consumer ISO URL. The cluster must be able to pull this URL over HTTPS.')
+                          : t(isoHint.helper)}
+                      </HelperTextItem>
+                      {showEditionPicker ? (
+                        <HelperTextItem>
+                          <a
+                            href={sku === 'win10'
+                              ? 'https://www.microsoft.com/software-download/windows10ISO'
+                              : 'https://www.microsoft.com/software-download/windows11'}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            {t('Microsoft Software Download')}
+                          </a>
+                        </HelperTextItem>
+                      ) : isoHint.evalCenter ? (
                         <HelperTextItem>
                           <a href={isoHint.evalCenter} target="_blank" rel="noreferrer">
                             {t('Microsoft Evaluation Center')}
@@ -720,7 +805,7 @@ const WindowsBuilderPageInner: FC = () => {
                     variant="link"
                     isInline
                     onClick={() => {
-                      setXml(recommendedAutounattend(autounattendSku));
+                      setXml(recommendedAutounattend(autounattendSku, isoType, isoType === 'consumer' ? editionIndex : undefined));
                       setXmlTouched(false);
                     }}
                   >

@@ -40,6 +40,27 @@ export type IsoHint = {
   helper: string;
 };
 
+export type IsoType = 'eval' | 'consumer';
+
+export type ConsumerEdition = {
+  label: string;
+  index: number;
+};
+
+/**
+ * Standard consumer ISO WIM indexes for Win11 25H2 (Win10 uses the same layout).
+ * Enterprise is not on standard consumer ISOs — use Enterprise Evaluation instead.
+ */
+export const CONSUMER_EDITIONS: ConsumerEdition[] = [
+  { label: 'Pro', index: 6 },
+  { label: 'Home', index: 1 },
+  { label: 'Education', index: 4 },
+  { label: 'Pro for Workstations', index: 10 },
+  { label: 'Pro Education', index: 8 },
+];
+
+export const DEFAULT_CONSUMER_EDITION_INDEX = 6;
+
 /**
  * Optional Microsoft Evaluation Center ISO URLs (en-US).
  * Canonical product pages:
@@ -225,6 +246,11 @@ export function preferredTemplateRef(templates: TemplateKind[]): string {
 
 export function normalizeSkuKey(id: string): string {
   return id.trim().toLowerCase().replace(/^windows/, 'win');
+}
+
+export function isClientSku(skuId: string): boolean {
+  const n = normalizeSkuKey(skuId);
+  return n === 'win10' || n === 'win11' || n.includes('win10') || n.includes('win11');
 }
 
 export function isoHintForSku(skuId: string): IsoHint {

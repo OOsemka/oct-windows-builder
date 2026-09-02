@@ -1,4 +1,4 @@
-import { normalizeSkuKey } from './windows-skus';
+import { IsoType, normalizeSkuKey } from './windows-skus';
 
 /**
  * Recommended Autounattend.xml for KubeVirt / OpenShift Virtualization golden images.
@@ -271,12 +271,35 @@ ${metas.join('\n')}
 `;
 }
 
-export function recommendedAutounattend(skuId: string): string {
+export function recommendedAutounattend(
+  skuId: string,
+  isoType: IsoType = 'eval',
+  editionIndex?: number,
+): string {
   const p = profileForSku(skuId);
+  const effectiveIndex = isoType === 'consumer' && editionIndex !== undefined
+    ? String(editionIndex)
+    : p.imageIndex;
   const drivers = driverPathsXml(p.virtioFolders);
   const peExtra = p.kind === 'client11' ? win11PeCommands() : p.kind === 'client10' ? win10PeCommands() : '';
-  const installFrom = installFromXml(p.imageIndex, p.imageName);
+  const installFrom = installFromXml(effectiveIndex, p.imageName);
   const firstLogon = firstLogonCommandsXml();
+  const isClientKind = p.kind === 'client10' || p.kind === 'client11';
+  const userData = isClientKind
+    ? `      <UserData>
+        <ProductKey>
+          <Key></Key>
+          <WillShowUI>Never</WillShowUI>
+        </ProductKey>
+        <AcceptEula>true</AcceptEula>
+        <FullName>Administrator</FullName>
+        <Organization></Organization>
+      </UserData>`
+    : `      <UserData>
+        <AcceptEula>true</AcceptEula>
+        <FullName>Administrator</FullName>
+        <Organization></Organization>
+      </UserData>`;
   const includeWinPEDrivers = !skipWinPEDrivers(p.skuId);
   const winPEDriverBlock = includeWinPEDrivers
     ? `    <component name="Microsoft-Windows-PnpCustomizationsWinPE" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
@@ -352,11 +375,7 @@ ${installFrom}          <InstallTo>
           <WillShowUI>OnError</WillShowUI>
         </OSImage>
       </ImageInstall>
-      <UserData>
-        <AcceptEula>true</AcceptEula>
-        <FullName>Administrator</FullName>
-        <Organization></Organization>
-      </UserData>
+${userData}
     </component>
   </settings>
   <settings pass="offlineServicing">
