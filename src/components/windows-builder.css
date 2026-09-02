@@ -102,6 +102,7 @@
 }
 
 .wb-edition-tile {
+  position: relative;
   height: 100%;
   border: 1px solid var(--pf-t--global--border--color--default, #c7c7c7);
   box-shadow: none;
@@ -110,6 +111,13 @@
 .wb-edition-tile-selected {
   border-color: var(--pf-t--global--color--brand--default, #0066cc);
   box-shadow: 0 0 0 1px var(--pf-t--global--color--brand--default, #0066cc);
+}
+
+.wb-edition-built-badge {
+  position: absolute;
+  top: 0.35rem;
+  right: 0.35rem;
+  z-index: 1;
 }
 
 .wb-edition-body {

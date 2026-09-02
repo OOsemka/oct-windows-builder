@@ -91,6 +91,20 @@ export type DataVolumeKind = {
   };
 };
 
+export type DataSourceKind = {
+  metadata: {
+    name: string;
+    namespace?: string;
+  };
+  status?: {
+    conditions?: Array<{ type?: string; status?: string; reason?: string; message?: string }>;
+  };
+};
+
+export function isDataSourceReady(ds: DataSourceKind): boolean {
+  return (ds.status?.conditions || []).some((c) => c.type === 'Ready' && c.status === 'True');
+}
+
 export type StorageClassKind = {
   metadata: {
     name: string;

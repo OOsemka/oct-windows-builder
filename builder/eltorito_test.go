@@ -172,23 +172,23 @@ func putElToritoCatalog(cat []byte, promptLBA, fileSize uint32) {
 // El Torito, UDF 1.02 with mixed-case efi/Microsoft/Boot.
 func buildMinimalUDFWindowsISO() []byte {
 	const (
-		sectors        = 360
-		catalogLBA     = 25
-		partStart      = 270
-		fsdRel         = 0
-		rootFERel      = 1
-		rootDirRel     = 2
-		efiFERel       = 3
-		efiDirRel      = 4
-		msFERel        = 5
-		msDirRel       = 6
-		bootFERel      = 7
-		bootDirRel     = 8
-		promptFERel    = 9
-		nopromptFERel  = 10
-		promptDataRel  = 20
+		sectors         = 360
+		catalogLBA      = 25
+		partStart       = 270
+		fsdRel          = 0
+		rootFERel       = 1
+		rootDirRel      = 2
+		efiFERel        = 3
+		efiDirRel       = 4
+		msFERel         = 5
+		msDirRel        = 6
+		bootFERel       = 7
+		bootDirRel      = 8
+		promptFERel     = 9
+		nopromptFERel   = 10
+		promptDataRel   = 20
 		nopromptDataRel = 24
-		fileSize       = 4 * isoSectorSize
+		fileSize        = 4 * isoSectorSize
 	)
 	img := make([]byte, sectors*isoSectorSize)
 

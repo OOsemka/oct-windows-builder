@@ -37,6 +37,14 @@ func (m *Manager) handleStartBuild(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, rec)
 }
 
+func (m *Manager) handleVirtioWin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"image": m.clusterVirtioWinImage()})
+}
+
 func (m *Manager) handleGetBuild(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimPrefix(r.URL.Path, "/api/v1/builds/")
 	name = strings.Trim(name, "/")

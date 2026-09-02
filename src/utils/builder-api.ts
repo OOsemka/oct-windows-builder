@@ -92,6 +92,19 @@ export async function startBuild(req: StartBuildRequest): Promise<BuildRecord> {
   return readJson<BuildRecord>(res, { diskName: req.diskName, status: 'Pending', message: '' });
 }
 
+export async function clusterVirtioWinImage(): Promise<string> {
+  try {
+    const res = requireResponse(await fetch(`${BUILDER_PROXY}/api/v1/virtio-win`), '/api/v1/virtio-win');
+    if (!res.ok) return '';
+    const data = await readJson<{ image?: string }>(res, { image: '' });
+    const img = (data.image || '').trim();
+    if (!img || /^https?:\/\//i.test(img)) return '';
+    return img;
+  } catch {
+    return '';
+  }
+}
+
 export async function builderHealth(): Promise<boolean> {
   try {
     const res = await fetch(`${BUILDER_PROXY}/healthz`);

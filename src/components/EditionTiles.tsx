@@ -1,4 +1,4 @@
-import { Card, CardBody, Gallery, GalleryItem, Spinner } from '@patternfly/react-core';
+import { Card, CardBody, Gallery, GalleryItem, Label, Spinner } from '@patternfly/react-core';
 import React, { FC } from 'react';
 import { useTranslation } from 'react-i18next';
 
@@ -12,10 +12,11 @@ type Props = {
   families: WindowsFamily[];
   sku: string;
   loading: boolean;
+  built: Set<string>;
   onSelect: (sku: string) => void;
 };
 
-const EditionTiles: FC<Props> = ({ families, sku, loading, onSelect }) => {
+const EditionTiles: FC<Props> = ({ families, sku, loading, built, onSelect }) => {
   const { t } = useTranslation(I18N);
 
   if (loading && families.length === 0) {
@@ -27,18 +28,24 @@ const EditionTiles: FC<Props> = ({ families, sku, loading, onSelect }) => {
       {families.map((f) => {
         const selected = sku === f.id;
         const title = editionTitle(f.id, f.displayName);
+        const isBuilt = built.has(f.id);
         return (
           <GalleryItem key={f.id}>
             <Card
-              className={`wb-edition-tile${selected ? ' wb-edition-tile-selected' : ''}`}
+              className={`wb-edition-tile${selected ? ' wb-edition-tile-selected' : ''}${isBuilt ? ' wb-edition-tile-built' : ''}`}
               isCompact
             >
               <CardBody className="wb-edition-body">
+                {isBuilt ? (
+                  <Label className="wb-edition-built-badge" color="green" status="success" isCompact>
+                    {t('Built')}
+                  </Label>
+                ) : null}
                 <button
                   type="button"
                   className="wb-edition-hit"
                   aria-pressed={selected}
-                  aria-label={title}
+                  aria-label={isBuilt ? `${title}, ${t('Built')}` : title}
                   onClick={() => onSelect(f.id)}
                 >
                   <WindowsFlagMark />

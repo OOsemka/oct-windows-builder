@@ -18,7 +18,7 @@ The form can override golden-image namespace and StorageClass. Empty StorageClas
 ## Resources created
 
 1. **ConfigMap** `wb-sysprep-<disk>`  
-   Keys `autounattend.xml`, `Autounattend.xml`, and `unattend.xml` (same XML). Mounted as a **SATA CD-ROM** from a ConfigMap volume (GitOps win2k19 layout), not a floppy and not `volumes[].sysprep`.
+   Keys `autounattend.xml` and `Autounattend.xml` (same **install** XML). Mounted as a **SATA CD-ROM** from a ConfigMap volume (GitOps win2k19 layout), not a floppy and not `volumes[].sysprep`. Do **not** also publish `unattend.xml` — sysprep searches removable media for that name and would re-apply generalize+shutdown on clones. No Cloudbase-Init.
 
 2. **DataVolume** `wb-iso-<disk>`  
    `spec.source.http.url` = user ISO URL. Size default 12Gi. Wait until `Succeeded`.
@@ -30,14 +30,14 @@ The form can override golden-image namespace and StorageClass. Empty StorageClas
    After the ISO DV succeeds, a Job patches El Torito in place (`efisys.bin` ← `efisys_noprompt.bin`) so UEFI does not wait for “Press any key to boot from CD or DVD”. The walker finds `efi/microsoft/boot` case-insensitively on Joliet, ISO9660, then UDF (Windows eval ISOs are UDF 1.02 with an ISO9660 stub). Then:  
    - Disk: blank DV, **SATA**, **bootOrder 1** (empty at first; firmware skips it; after Setup, Windows Boot Manager wins on reboot)  
    - CD-ROM **bootOrder 2**: patched ISO DV  
-   - Optional CD-ROM: virtio-win **containerDisk** (no bootOrder)  
-   - Answer-file ConfigMap CD-ROM (no bootOrder; keys `autounattend.xml` / `Autounattend.xml`)  
+   - CD-ROM: cluster **virtio-win** containerDisk (`ConfigMap virtio-win` `data.virtio-win-image` in the OpenShift Virtualization namespace; never the HTTP download URL)  
+   - Answer-file ConfigMap CD-ROM (no bootOrder; keys `autounattend.xml` / `Autounattend.xml` only)  
    - UEFI firmware (`secureBoot: false`); TPM enabled (needed for Windows 11)  
    - `runStrategy: RerunOnFailure`  
    - `evictionStrategy: None` (RWO install PVC cannot LiveMigrate)
 
 5. **Wait** for the guest to power off after sysprep  
-   Autounattend FirstLogonCommands run `sysprep.exe /generalize /oobe /shutdown /quiet`. A successful generalize ends in ACPI shutdown → VMI `Succeeded` (often briefly, often ~7 minutes) or VM `Stopped` / VMI NotFound. Treat `Succeeded` as “guest exited” immediately — do **not** poll 4h on NotFound. ACPI after a running VMI, guest agent, guest OS, or disk growth is **Ready**. Never-booted, empty picker, or an immediate crash with none of that evidence is **Error** (`guest shut down before install finished`).
+   Autounattend FirstLogonCommands install virtio-win-gt + qemu-ga from the virtio-win CD (letters D–G), delete cached Panther/Sysprep unattend files, then `sysprep.exe /generalize /oobe /shutdown /quiet /mode:vm`. A successful generalize ends in ACPI shutdown **after** qemu-guest-agent connected. A ~7 minute ACPI with no guest agent is **not** a sealed image (that is how 1.0.8 cloned an unsealed disk). Never-booted, empty picker, or shutdown before qemu-ga is **Error**.
 
 6. **Delete** the VM (keep the install PVC).
 
@@ -75,7 +75,7 @@ Recommended XML matches GitOps win2k19: INDEX **2** (Standard Desktop Experience
 
 Microsoft Evaluation Center **SERVER_EVAL** ISOs have four images: 1 Standard Core, 2 Standard Desktop, 3 Datacenter Core, 4 Datacenter Desktop Experience. Client eval is usually one image.
 
-All SKUs: GPT/EFI, specialize PnP, FirstLogon virtio MSI + qemu-ga, drop cached unattend, **sysprep /generalize /oobe /shutdown**. No Cloudbase-Init. `WillShowUI OnError` if ImageInstall cannot match the WIM.
+All SKUs: GPT/EFI, specialize PnP, FirstLogon virtio MSI + qemu-ga from D–G, delete cached unattend, **sysprep /generalize /oobe /shutdown /mode:vm**. No Cloudbase-Init. `WillShowUI OnError` if ImageInstall cannot match the WIM.
 
 ## ISO URL suggestions
 
@@ -103,9 +103,9 @@ Never invent a lab ISO.
 
 These are **not** faked as Ready:
 
-- **virtio-win containerDisk** — user must supply an image the cluster can pull (often `registry.redhat.io/container-native-virtualization/virtio-win`, which needs a pull secret). The form pre-fills from an existing Windows Template when one exists. Public `quay.io/kubevirt/virtio-container-disk` is not a full virtio-win ISO.
-- **Guest tools MSI** — `virtio-win-gt-x64.msi` and `qemu-ga` live on that CD; Autounattend tries to install them if present.
-- **Answer-file CD** — the ConfigMap is a SATA CD (GitOps win2k19), keys `autounattend.xml` and `Autounattend.xml`. EFI noprompt keeps the blank disk at bootOrder 1 (GitOps BIOS booted the ISO at order 1).
+- **virtio-win containerDisk** — builder reads `ConfigMap/virtio-win` `data.virtio-win-image` (HCO). Do not use `virtio-win-image-download-url` (cluster route). The form pre-fills that image; empty means the same cluster default.  
+- **Guest tools MSI** — `virtio-win-gt-x64.msi` and `guest-agent/qemu-ga-x86_64.msi` on that CD; Autounattend tries D: E: F: G:.  
+- **Answer-file CD** — the ConfigMap is a SATA CD (GitOps win2k19), keys `autounattend.xml` and `Autounattend.xml` only (not `unattend.xml`). EFI noprompt keeps the blank disk at bootOrder 1.
 - **Multi-edition ISO** — recommended XML uses `/IMAGE/INDEX` **2** (Standard Desktop) and omits `/IMAGE/NAME` on server eval media (GitOps win2k19). Retail or custom WIMs may need a different index (edit the form). Do not add a GVLK on SERVER_EVAL.
 - **Windows 11** — needs TPM (enabled) and often Secure Boot; Secure Boot is off by default so unsigned test drivers can load. Turn it on in Autounattend/VM if your ISO requires it.
 - **Replace golden DV** — deleting the old DV before the clone finishes would lose the previous image; the builder waits for the install disk first, then replaces. There is still a gap while the new clone runs.

@@ -57,6 +57,16 @@ func (m *Manager) Start(req StartBuildRequest) (*BuildRecord, error) {
 	if strings.TrimSpace(req.Autounattend) == "" {
 		return nil, fmt.Errorf("autounattend XML is required")
 	}
+	req.VirtioImage = strings.TrimSpace(req.VirtioImage)
+	if strings.HasPrefix(strings.ToLower(req.VirtioImage), "http://") || strings.HasPrefix(strings.ToLower(req.VirtioImage), "https://") {
+		return nil, fmt.Errorf("virtioImage must be a containerDisk image, not an ISO URL")
+	}
+	if req.VirtioImage == "" {
+		req.VirtioImage = m.clusterVirtioWinImage()
+		if req.VirtioImage == "" {
+			return nil, fmt.Errorf("virtio-win containerDisk image is required: set virtioImage or ensure ConfigMap virtio-win (data.virtio-win-image) exists in the OpenShift Virtualization namespace")
+		}
+	}
 	if req.DiskSize == "" {
 		req.DiskSize = "60Gi"
 	}
@@ -97,7 +107,7 @@ func (m *Manager) Start(req StartBuildRequest) (*BuildRecord, error) {
 	m.builds[req.DiskName] = rec
 	m.mu.Unlock()
 
-	logf("start build disk=%s iso=%s goldenNS=%s template=%s/%s", rec.DiskName, rec.ISOHostPath, rec.GoldenNamespace, rec.TemplateNamespace, rec.TemplateName)
+	logf("start build disk=%s iso=%s goldenNS=%s template=%s/%s virtio=%s", rec.DiskName, rec.ISOHostPath, rec.GoldenNamespace, rec.TemplateNamespace, rec.TemplateName, rec.VirtioImage)
 	m.persist(rec)
 	go m.run(req)
 	return rec, nil
@@ -321,10 +331,9 @@ func (m *Manager) run(req StartBuildRequest) {
 	m.set(disk, StatusReady, "DataVolume "+disk+" Succeeded")
 }
 
-// Unattended Setup + sysprep often ACPI-shuts down in ~7 minutes (WinPE →
-// copy → sysprep → Server Manager → shutdown). That is Ready, not Error.
-// Reject never-booted, empty picker, and immediate crash with no guest OS,
-// disk growth, ACPI-after-running, or a few minutes of a running VMI.
+// Unattended Setup + a *completed* sysprep /generalize often ACPI-shuts down
+// after FirstLogon (qemu-ga connected, then sysprep). A ~7 minute ACPI with no
+// guest agent is not proof of generalize — that cloned an unsealed disk.
 const (
 	minGuestUptime     = 5 * time.Minute
 	minInstallDiskUsed = int64(8) << 30
@@ -346,6 +355,7 @@ type guestExitEvidence struct {
 	SawSucceeded bool
 	SawRunning   bool
 	DiskUsed     int64
+	RequireAgent bool
 }
 
 type waitAction int
@@ -463,6 +473,7 @@ func (m *Manager) finishGuestWait(name string, st vmiWaitState, why string) erro
 		SawSucceeded: st.sawSucceeded,
 		SawRunning:   st.sawRunning,
 		DiskUsed:     m.installDiskUsedBytes(name),
+		RequireAgent: m.buildUsesVirtio(name),
 	}
 	if err := evaluateGuestExit(ev); err != nil {
 		return err
@@ -471,7 +482,18 @@ func (m *Manager) finishGuestWait(name string, st vmiWaitState, why string) erro
 	return nil
 }
 
+func (m *Manager) buildUsesVirtio(installName string) bool {
+	disk := strings.TrimPrefix(installName, "wb-install-")
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	rec := m.builds[disk]
+	return rec != nil && strings.TrimSpace(rec.VirtioImage) != ""
+}
+
 func evaluateGuestExit(e guestExitEvidence) error {
+	if e.RequireAgent && !e.SawAgent {
+		return fmt.Errorf("guest shut down before qemu-guest-agent connected (virtio-win tools not installed; golden would be unsealed)")
+	}
 	if e.SawAgent {
 		return nil
 	}
@@ -481,7 +503,8 @@ func evaluateGuestExit(e guestExitEvidence) error {
 	if e.SawGuestOS {
 		return nil
 	}
-	// VMI Succeeded is guest ACPI shutdown (sysprep /shutdown), often ~7m.
+	// VMI Succeeded is guest ACPI shutdown. Without qemu-ga this is not
+	// proof sysprep /generalize finished (7m Server Manager then power-off).
 	if e.SawSucceeded {
 		return nil
 	}
@@ -633,13 +656,86 @@ func (m *Manager) ensureSysprepCM(name, xml string) error {
 	return err
 }
 
-// GitOps win2k19 uses lowercase autounattend.xml on a ConfigMap CD.
+// Install Autounattend only. Do not also publish unattend.xml — sysprep
+// searches removable media for that name and would re-apply generalize+shutdown
+// on the golden and on every clone. GitOps win2k19 used autounattend.xml for Setup.
 func sysprepAnswerFiles(xml string) map[string]interface{} {
 	return map[string]interface{}{
 		"autounattend.xml": xml,
 		"Autounattend.xml": xml,
-		"unattend.xml":     xml,
 	}
+}
+
+func isContainerDiskRef(s string) bool {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return false
+	}
+	low := strings.ToLower(s)
+	if strings.HasPrefix(low, "http://") || strings.HasPrefix(low, "https://") {
+		return false
+	}
+	return strings.Contains(s, "/")
+}
+
+func containerDiskImageFromVirtioWinCM(data map[string]interface{}) string {
+	if data == nil {
+		return ""
+	}
+	for _, k := range []string{"virtio-win-image", "virtio_win_image"} {
+		s, _ := data[k].(string)
+		if isContainerDiskRef(s) {
+			return strings.TrimSpace(s)
+		}
+	}
+	return ""
+}
+
+func virtioWinImageFromConfigMapList(obj map[string]interface{}) string {
+	if obj == nil {
+		return ""
+	}
+	items, _ := obj["items"].([]interface{})
+	fallback := ""
+	for _, raw := range items {
+		cm, _ := raw.(map[string]interface{})
+		if cm == nil {
+			continue
+		}
+		img := containerDiskImageFromVirtioWinCM(nestedMap(cm, "data"))
+		if img == "" {
+			continue
+		}
+		ns := nestedString(cm, "metadata", "namespace")
+		switch ns {
+		case "openshift-cnv", "kubevirt-hyperconverged", "openshift-virtualization":
+			return img
+		}
+		if fallback == "" {
+			fallback = img
+		}
+	}
+	return fallback
+}
+
+func (m *Manager) clusterVirtioWinImage() string {
+	if m.k8s == nil {
+		return ""
+	}
+	for _, ns := range []string{"openshift-cnv", "kubevirt-hyperconverged", "openshift-virtualization"} {
+		obj, code, err := m.k8s.Get(fmt.Sprintf("/api/v1/namespaces/%s/configmaps/virtio-win", ns))
+		if err != nil || code == http.StatusNotFound || obj == nil {
+			continue
+		}
+		if img := containerDiskImageFromVirtioWinCM(nestedMap(obj, "data")); img != "" {
+			return img
+		}
+	}
+	obj, code, err := m.k8s.Get("/api/v1/configmaps?fieldSelector=metadata.name%3Dvirtio-win")
+	if err != nil || code >= 300 || obj == nil {
+		return ""
+	}
+	return virtioWinImageFromConfigMapList(obj)
 }
 
 func storageSpec(size, storageClass string) map[string]interface{} {
@@ -772,8 +868,9 @@ func installVMManifest(ns, vmName, isoName, sysprepName string, req StartBuildRe
 			"containerDisk": map[string]interface{}{"image": req.VirtioImage},
 		})
 	}
-	// GitOps win2k19 attaches the answer file as a ConfigMap CD-ROM (not
-	// volumes[].sysprep). Same ConfigMap; Setup reads autounattend.xml on that CD.
+	// GitOps win2k19: Windows ISO, virtio-win containerDisk, then Autounattend
+	// ConfigMap CD. Keep that order so virtio is not the last CD (answer-file
+	// used to land on E: while DriverPaths pointed at E:\viostor).
 	volumes = append(volumes, map[string]interface{}{
 		"name":      "sysprep",
 		"configMap": map[string]interface{}{"name": sysprepName},
@@ -919,6 +1016,7 @@ func (m *Manager) ensureTemplate(req StartBuildRequest) error {
 	}
 	if existing != nil && code != http.StatusNotFound && !req.CustomTemplate {
 		applyTemplateDataSource(existing, req.DiskName, req.GoldenNamespace)
+		stripTemplateSysprep(existing)
 		_, err = m.k8s.Put(path, existing)
 		if err != nil {
 			return err
@@ -972,6 +1070,74 @@ func applyTemplateDataSource(tpl map[string]interface{}, disk, goldenNS string) 
 		})
 	}
 	tpl["parameters"] = params
+}
+
+func stripTemplateSysprep(tpl map[string]interface{}) {
+	objects, _ := tpl["objects"].([]interface{})
+	for _, raw := range objects {
+		obj, _ := raw.(map[string]interface{})
+		if obj == nil {
+			continue
+		}
+		spec := nestedMap(obj, "spec", "template", "spec")
+		if spec == nil {
+			continue
+		}
+		spec["volumes"] = filterSysprepVolumes(spec["volumes"])
+		if devices := nestedMap(spec, "domain", "devices"); devices != nil {
+			devices["disks"] = filterSysprepDisks(devices["disks"])
+		}
+	}
+}
+
+func isSysprepVolume(v map[string]interface{}) bool {
+	if v == nil {
+		return false
+	}
+	name, _ := v["name"].(string)
+	if strings.EqualFold(name, "sysprep") {
+		return true
+	}
+	if _, ok := v["sysprep"]; ok {
+		return true
+	}
+	cm := nestedMap(v, "configMap")
+	if cm != nil {
+		cmName, _ := cm["name"].(string)
+		if strings.HasPrefix(cmName, "wb-sysprep-") {
+			return true
+		}
+	}
+	return false
+}
+
+func filterSysprepVolumes(raw interface{}) []interface{} {
+	vols, _ := raw.([]interface{})
+	out := make([]interface{}, 0, len(vols))
+	for _, item := range vols {
+		v, _ := item.(map[string]interface{})
+		if isSysprepVolume(v) {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func filterSysprepDisks(raw interface{}) []interface{} {
+	disks, _ := raw.([]interface{})
+	out := make([]interface{}, 0, len(disks))
+	for _, item := range disks {
+		d, _ := item.(map[string]interface{})
+		if d != nil {
+			name, _ := d["name"].(string)
+			if strings.EqualFold(name, "sysprep") {
+				continue
+			}
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 func windowsVMTemplate(ns, name, goldenNS, disk, size string) map[string]interface{} {

@@ -48,6 +48,7 @@ func main() {
 		}
 	})
 	mux.HandleFunc("/api/v1/builds/", mgr.handleGetBuild)
+	mux.HandleFunc("/api/v1/virtio-win", mgr.handleVirtioWin)
 
 	handler := withCORS(mux)
 

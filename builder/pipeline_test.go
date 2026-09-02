@@ -50,8 +50,11 @@ func TestRedactAutounattend(t *testing.T) {
 
 func TestSysprepAnswerFiles(t *testing.T) {
 	d := sysprepAnswerFiles("<unattend/>")
-	if d["autounattend.xml"] != "<unattend/>" || d["Autounattend.xml"] != "<unattend/>" || d["unattend.xml"] != "<unattend/>" {
+	if d["autounattend.xml"] != "<unattend/>" || d["Autounattend.xml"] != "<unattend/>" {
 		t.Fatalf("%v", d)
+	}
+	if _, ok := d["unattend.xml"]; ok {
+		t.Fatal("install Autounattend must not also be published as unattend.xml")
 	}
 }
 
@@ -75,6 +78,13 @@ func TestEvaluateGuestExit(t *testing.T) {
 	}
 	if err := evaluateGuestExit(guestExitEvidence{Uptime: 3 * time.Minute, SawAgent: true}); err != nil {
 		t.Fatalf("guest agent means FirstLogon ran: %v", err)
+	}
+	if err := evaluateGuestExit(guestExitEvidence{Uptime: 7 * time.Minute, SawRunning: true, SawSucceeded: true, RequireAgent: true, SawAgent: true}); err != nil {
+		t.Fatalf("agent then ACPI must clone: %v", err)
+	}
+	noAgent := evaluateGuestExit(guestExitEvidence{Uptime: 7 * time.Minute, SawRunning: true, SawSucceeded: true, RequireAgent: true})
+	if noAgent == nil || !strings.Contains(noAgent.Error(), "qemu-guest-agent") {
+		t.Fatalf("virtio install without qemu-ga must not clone: %v", noAgent)
 	}
 	if err := evaluateGuestExit(guestExitEvidence{Uptime: 2 * time.Minute, SawGuestOS: true}); err != nil {
 		t.Fatalf("guest OS is Setup evidence: %v", err)

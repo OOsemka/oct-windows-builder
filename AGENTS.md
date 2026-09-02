@@ -9,8 +9,8 @@ This repository is the **Windows Builder** ConsolePlugin. It is **not** the OCT 
 | | Value |
 | --- | --- |
 | Plugin ID / ConsolePlugin / `package.json` `consolePlugin.name` | **`oct-windows-builder`** |
-| Image | `quay.io/<org>/oct-windows-builder:1.0.8-ocp4.22` (and `:1.0.8-ocp4.21`; `<semver>-ocp<major.minor>`) |
-| Builder image | `quay.io/<org>/oct-windows-builder-builder:1.0.8-ocp4.22` (and `:1.0.8-ocp4.21`) |
+| Image | `quay.io/<org>/oct-windows-builder:1.0.9-ocp4.22` (and `:1.0.9-ocp4.21`; `<semver>-ocp<major.minor>`) |
+| Builder image | `quay.io/<org>/oct-windows-builder-builder:1.0.9-ocp4.22` (and `:1.0.9-ocp4.21`) |
 | i18n | `plugin__oct-windows-builder` |
 | Route | `/community-tools/compute/windows-builder` |
 | Proxy | `/api/proxy/plugin/oct-windows-builder/windows-builder` |
@@ -38,17 +38,17 @@ Typical flow (see `docs/install-job.md`):
 
 1. DataVolume for the Windows ISO (`source.http.url` the user supplied).
 2. Blank DataVolume for the install disk.
-3. ConfigMap `autounattend.xml` / `Autounattend.xml` / `unattend.xml` (ConfigMap **CD-ROM**, GitOps win2k19 layout).
-4. VM boots ISO + virtio-win containerDisk (if the user provided an image) + Autounattend.
+3. ConfigMap `autounattend.xml` / `Autounattend.xml` (ConfigMap **CD-ROM**, GitOps win2k19 layout). Do not publish `unattend.xml` with the install XML.
+4. VM boots ISO + cluster virtio-win containerDisk + Autounattend.
 5. Unattended setup → FirstLogonCommands run **sysprep /generalize /oobe /shutdown**.
-6. Guest ACPI shutdown (VMI `Succeeded`, or VM Stopped / VMI NotFound after the guest ran). That is **Ready** even at ~7 minutes when the VMI ran (sysprep). Never-booted, empty picker, or an immediate crash with no guest OS / disk growth stays **Error**. Clone the disk to DataVolume `win2k19` (etc.) in `openshift-virtualization-os-images`.
+6. Guest ACPI shutdown **after qemu-guest-agent connected** (FirstLogon installed tools, then sysprep). That is **Ready**. A ~7 minute ACPI with no guest agent is **Error** (unsealed). Clone the disk to DataVolume `win2k19` (etc.) in `openshift-virtualization-os-images`.
 7. Optional Template create/update; DataSource pointing at that PVC.
 
 Do **not** mark a DataVolume Ready unless CDI `status.phase` is `Succeeded`.
 
 ## OpenShift and extension versions
 
-Two axes in the catalog: git tag **`v1.x.x`** (semver) and optional branch **`ocp-X.Y`** when PatternFly or APIs diverge. Image tags **always** `<semver>-ocp<major.minor>` (e.g. `1.0.8-ocp4.22`).
+Two axes in the catalog: git tag **`v1.x.x`** (semver) and optional branch **`ocp-X.Y`** when PatternFly or APIs diverge. Image tags **always** `<semver>-ocp<major.minor>` (e.g. `1.0.9-ocp4.22`).
 
 - Git: `main` tracks the newest supported minor (currently **4.22**).
 - PatternFly 6 on 4.22; do not mix PF majors on one branch.

@@ -9,6 +9,9 @@ import { normalizeSkuKey } from './windows-skus';
  * **2** (Standard Desktop Experience) only — no `/IMAGE/NAME`. The answer file
  * is a ConfigMap CD key `autounattend.xml` (not a KubeVirt sysprep volume).
  * INDEX 2 + NAME `SERVERDATACENTER` conflict; do not combine them.
+ * GitOps put virtio-win on E: and scripts on F:; FirstLogon called
+ * `f:\\post-install.ps1` (Cloudbase-Init + sysprep). This plugin does **not**
+ * install Cloudbase-Init. Native `sysprep /generalize /oobe /shutdown` only.
  *
  * Other sources:
  * - Answer files: https://learn.microsoft.com/en-us/windows-hardware/manufacture/desktop/update-windows-settings-and-scripts-create-your-own-answer-file-sxs
@@ -39,9 +42,15 @@ import { normalizeSkuKey } from './windows-skus';
  * volume media can add a key from:
  * https://learn.microsoft.com/en-us/windows-server/get-started/kms-client-activation-keys
  *
- * No Cloudbase-Init. FirstLogon ends with sysprep /generalize /oobe /shutdown.
- * Temporary AutoLogon password is a placeholder — never log it or product keys.
+ * No Cloudbase-Init. FirstLogon installs virtio-win-gt + qemu-ga from the
+ * standard CNV virtio-win CD (letters D–G; the Autounattend ConfigMap CD must
+ * not steal E:), deletes cached Panther/Sysprep unattend files, then
+ * sysprep /generalize /oobe /shutdown /mode:vm. Temporary AutoLogon password
+ * is a placeholder — never log it or product keys.
  */
+
+/** SATA CD letters on the install VM: Windows ISO, virtio-win, Autounattend CM. */
+export const VIRTIO_CD_LETTERS = ['D', 'E', 'F', 'G'] as const;
 
 type SkuKind = 'client10' | 'client11' | 'server' | 'generic';
 
@@ -117,15 +126,76 @@ function driverPathsXml(folders: string[]): string {
   const kinds = ['viostor', 'NetKVM', 'Balloon'];
   let i = 1;
   const lines: string[] = [];
-  for (const folder of folders) {
-    for (const kind of kinds) {
-      lines.push(`        <PathAndCredentials wcm:action="add" wcm:keyValue="${i}">
-          <Path>E:\\${kind}\\${folder}\\amd64</Path>
+  // Install VM CDs: Windows ISO, virtio-win, Autounattend ConfigMap. Letter
+  // assignment varies; list D–G so WinPE finds viostor/NetKVM/Balloon on the
+  // virtio-win containerDisk instead of the answer-file CD (that used to be E:).
+  for (const letter of VIRTIO_CD_LETTERS) {
+    for (const folder of folders) {
+      for (const kind of kinds) {
+        lines.push(`        <PathAndCredentials wcm:action="add" wcm:keyValue="${i}">
+          <Path>${letter}:\\${kind}\\${folder}\\amd64</Path>
         </PathAndCredentials>`);
-      i += 1;
+        i += 1;
+      }
     }
   }
   return lines.join('\n');
+}
+
+function firstLogonCommandsXml(): string {
+  let order = 1;
+  const cmds: string[] = [];
+  const add = (desc: string, cmd: string) => {
+    cmds.push(`        <SynchronousCommand wcm:action="add">
+          <Order>${order}</Order>
+          <Description>${desc}</Description>
+          <CommandLine>${cmd}</CommandLine>
+          <RequiresUserInput>false</RequiresUserInput>
+        </SynchronousCommand>`);
+    order += 1;
+  };
+  for (const d of VIRTIO_CD_LETTERS) {
+    add(
+      `Install virtio-win guest tools from ${d}: if present`,
+      `cmd /c if exist ${d}:\\virtio-win-gt-x64.msi msiexec /i ${d}:\\virtio-win-gt-x64.msi /qn /norestart`,
+    );
+  }
+  for (const d of VIRTIO_CD_LETTERS) {
+    add(
+      `Install QEMU guest agent from ${d}: if present`,
+      `cmd /c if exist ${d}:\\guest-agent\\qemu-ga-x86_64.msi msiexec /i ${d}:\\guest-agent\\qemu-ga-x86_64.msi /qn /norestart`,
+    );
+  }
+  add(
+    'Disable AutoLogon',
+    'reg add "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon" /v AutoAdminLogon /t REG_SZ /d 0 /f',
+  );
+  add('Wait so qemu-guest-agent can register before sysprep', 'cmd /c timeout /t 25 /nobreak');
+  add(
+    'Remove Panther unattend.xml',
+    'cmd /c if exist C:\\Windows\\Panther\\unattend.xml del /f /q C:\\Windows\\Panther\\unattend.xml',
+  );
+  add(
+    'Remove Panther Autounattend.xml',
+    'cmd /c if exist C:\\Windows\\Panther\\Autounattend.xml del /f /q C:\\Windows\\Panther\\Autounattend.xml',
+  );
+  add(
+    'Remove Sysprep unattend.xml',
+    'cmd /c if exist C:\\Windows\\System32\\Sysprep\\unattend.xml del /f /q C:\\Windows\\System32\\Sysprep\\unattend.xml',
+  );
+  add(
+    'Remove Panther Unattend directory',
+    'cmd /c if exist C:\\Windows\\Panther\\Unattend rd /s /q C:\\Windows\\Panther\\Unattend',
+  );
+  add(
+    'Remove Sysprep Panther directory',
+    'cmd /c if exist C:\\Windows\\System32\\Sysprep\\Panther rd /s /q C:\\Windows\\System32\\Sysprep\\Panther',
+  );
+  add(
+    'Sysprep generalize and shutdown (golden image; no Cloudbase-Init)',
+    'cmd /c C:\\Windows\\System32\\Sysprep\\sysprep.exe /generalize /oobe /shutdown /quiet /mode:vm',
+  );
+  return cmds.join('\n');
 }
 
 function win11PeCommands(): string {
@@ -191,6 +261,7 @@ export function recommendedAutounattend(skuId: string): string {
   const drivers = driverPathsXml(p.virtioFolders);
   const peExtra = p.kind === 'client11' ? win11PeCommands() : p.kind === 'client10' ? win10PeCommands() : '';
   const installFrom = installFromXml(p.imageIndex, p.imageName);
+  const firstLogon = firstLogonCommandsXml();
   return `<?xml version="1.0" encoding="utf-8"?>
 <unattend xmlns="urn:schemas-microsoft-com:unattend">
   <settings pass="windowsPE">
@@ -317,8 +388,6 @@ ${drivers}
         <HideWirelessSetupInOOBE>true</HideWirelessSetupInOOBE>
         <NetworkLocation>Work</NetworkLocation>
         <ProtectYourPC>3</ProtectYourPC>
-        <SkipMachineOOBE>true</SkipMachineOOBE>
-        <SkipUserOOBE>true</SkipUserOOBE>
       </OOBE>
       <UserAccounts>
         <AdministratorPassword>
@@ -329,36 +398,7 @@ ${drivers}
       <RegisteredOwner>Administrator</RegisteredOwner>
       <TimeZone>UTC</TimeZone>
       <FirstLogonCommands>
-        <SynchronousCommand wcm:action="add">
-          <Order>1</Order>
-          <Description>Install virtio guest tools if present on E:</Description>
-          <CommandLine>cmd /c if exist E:\\virtio-win-gt-x64.msi msiexec /i E:\\virtio-win-gt-x64.msi /qn /norestart</CommandLine>
-          <RequiresUserInput>false</RequiresUserInput>
-        </SynchronousCommand>
-        <SynchronousCommand wcm:action="add">
-          <Order>2</Order>
-          <Description>Install QEMU guest agent if present</Description>
-          <CommandLine>cmd /c if exist E:\\guest-agent\\qemu-ga-x86_64.msi msiexec /i E:\\guest-agent\\qemu-ga-x86_64.msi /qn /norestart</CommandLine>
-          <RequiresUserInput>false</RequiresUserInput>
-        </SynchronousCommand>
-        <SynchronousCommand wcm:action="add">
-          <Order>3</Order>
-          <Description>Disable AutoLogon</Description>
-          <CommandLine>reg add "HKLM\\SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion\\Winlogon" /v AutoAdminLogon /t REG_SZ /d 0 /f</CommandLine>
-          <RequiresUserInput>false</RequiresUserInput>
-        </SynchronousCommand>
-        <SynchronousCommand wcm:action="add">
-          <Order>4</Order>
-          <Description>Drop cached unattend so sysprep does not re-apply setup XML</Description>
-          <CommandLine>cmd /c if exist C:\\Windows\\Panther\\unattend.xml move /Y C:\\Windows\\Panther\\unattend.xml C:\\Windows\\Panther\\unattend.install.xml</CommandLine>
-          <RequiresUserInput>false</RequiresUserInput>
-        </SynchronousCommand>
-        <SynchronousCommand wcm:action="add">
-          <Order>5</Order>
-          <Description>Sysprep generalize and shutdown (golden image)</Description>
-          <CommandLine>cmd /c C:\\Windows\\System32\\Sysprep\\sysprep.exe /generalize /oobe /shutdown /quiet</CommandLine>
-          <RequiresUserInput>false</RequiresUserInput>
-        </SynchronousCommand>
+${firstLogon}
       </FirstLogonCommands>
     </component>
   </settings>

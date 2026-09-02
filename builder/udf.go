@@ -14,7 +14,7 @@ const (
 	udfTagLogicalVolume  = 6
 	udfTagTerminating    = 8
 	udfTagFileSet        = 256
-	udfTagFileIdentifier  = 257
+	udfTagFileIdentifier = 257
 	udfTagFileEntry      = 261
 	udfTagExtFileEntry   = 266
 	udfAllocShort        = 0

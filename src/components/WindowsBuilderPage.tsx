@@ -32,10 +32,12 @@ import { Table, Thead, Tr, Th, Tbody, Td } from '@patternfly/react-table';
 import React, { Component, ErrorInfo, FC, ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
 
 import { recommendedAutounattend } from '../utils/autounattend';
-import { builderHealth, BuildRecord, listBuilds, startBuild } from '../utils/builder-api';
+import { builderHealth, BuildRecord, clusterVirtioWinImage, listBuilds, startBuild } from '../utils/builder-api';
 import {
   DataVolumeKind,
   DataVolumeModel,
+  DataSourceKind,
+  DataSourceModel,
   GOLDEN_IMAGE_NAMESPACE,
   PLUGIN_NAMESPACE,
   StorageClassKind,
@@ -45,6 +47,7 @@ import {
   TemplateModel,
   dvStorageClass,
   getK8sErrorMessage,
+  isDataSourceReady,
   isDefaultStorageClass,
   isDiscoveredModel,
   isForbiddenError,
@@ -88,6 +91,12 @@ const SC_GVK = {
   group: StorageClassModel.apiGroup,
   version: StorageClassModel.apiVersion,
   kind: StorageClassModel.kind,
+};
+
+const DS_GVK = {
+  group: DataSourceModel.apiGroup,
+  version: DataSourceModel.apiVersion,
+  kind: DataSourceModel.kind,
 };
 
 type TemplateAction = 'none' | 'existing' | 'custom';
@@ -179,9 +188,11 @@ const WindowsBuilderPageInner: FC = () => {
   const { t } = useTranslation(I18N);
 
   const [dvModel, modelsInFlight] = useK8sModel(DV_GVK);
+  const [dsModel] = useK8sModel(DS_GVK);
   const [tplModel] = useK8sModel(TPL_GVK);
   const [scModel] = useK8sModel(SC_GVK);
   const hasDv = isDiscoveredModel(dvModel);
+  const hasDs = isDiscoveredModel(dsModel);
   const hasTpl = isDiscoveredModel(tplModel);
   const hasSc = isDiscoveredModel(scModel);
   const tplMissing = !modelsInFlight && !hasTpl;
@@ -204,6 +215,17 @@ const WindowsBuilderPageInner: FC = () => {
           isList: true,
           namespaced: true,
           namespace: PLUGIN_NAMESPACE,
+        }
+      : null,
+  );
+
+  const [dataSources] = useK8sWatchResource<K8sResourceCommon[]>(
+    hasDs
+      ? {
+          groupVersionKind: DS_GVK,
+          isList: true,
+          namespaced: true,
+          namespace: GOLDEN_IMAGE_NAMESPACE,
         }
       : null,
   );
@@ -313,6 +335,21 @@ const WindowsBuilderPageInner: FC = () => {
     [storageClasses],
   );
 
+  const builtDisks = useMemo(() => {
+    const names = new Set<string>();
+    ((dvGolden || []) as DataVolumeKind[]).forEach((d) => {
+      if (d?.metadata?.name && d.status?.phase === 'Succeeded') {
+        names.add(d.metadata.name);
+      }
+    });
+    ((dataSources || []) as DataSourceKind[]).forEach((ds) => {
+      if (ds?.metadata?.name && isDataSourceReady(ds)) {
+        names.add(ds.metadata.name);
+      }
+    });
+    return names;
+  }, [dvGolden, dataSources]);
+
   useEffect(() => {
     if (xmlTouched || !sku) return;
     setXml(recommendedAutounattend(autounattendSku));
@@ -339,6 +376,10 @@ const WindowsBuilderPageInner: FC = () => {
         return;
       }
     }
+    void clusterVirtioWinImage().then((img) => {
+      if (img) setVirtioImage(img);
+      setVirtioPrefill(true);
+    });
   }, [families, virtioPrefill]);
 
   useEffect(() => {
@@ -571,7 +612,7 @@ const WindowsBuilderPageInner: FC = () => {
                 onOpen={() => openStep('edition')}
               >
                 <p className="wb-lead">{t('Choose a Windows edition. We will ask for an ISO next.')}</p>
-                <EditionTiles families={families} sku={sku} loading={tplLoading} onSelect={onSku} />
+                <EditionTiles families={families} sku={sku} loading={tplLoading} built={builtDisks} onSelect={onSku} />
                 {sku === CUSTOM_SKU ? (
                   <FormGroup label={t('DataVolume name')} fieldId="wb-disk" isRequired>
                     <TextInput
@@ -699,7 +740,7 @@ const WindowsBuilderPageInner: FC = () => {
                   <FormHelperText>
                     <HelperText>
                       <HelperTextItem>
-                        {t('Virtio drivers (viostor, NetKVM, Balloon), GPT/EFI, no ProductKey on Evaluation Center media, then sysprep /generalize /oobe /shutdown. Windows 11 also bypasses TPM/Secure Boot checks. Edit the temporary AutoLogon password.')}
+                        {t('Virtio drivers (viostor, NetKVM, Balloon) and qemu-guest-agent from the cluster virtio-win CD (letters D–G), GPT/EFI, no ProductKey on Evaluation Center media, then sysprep /generalize /oobe /shutdown. Windows 11 also bypasses TPM/Secure Boot checks. Edit the temporary AutoLogon password. No Cloudbase-Init.')}
                       </HelperTextItem>
                     </HelperText>
                   </FormHelperText>
@@ -847,7 +888,7 @@ const WindowsBuilderPageInner: FC = () => {
                   <FormHelperText>
                     <HelperText>
                       <HelperTextItem>
-                        {t('Optional. Pre-filled from an existing Windows Template when one lists a virtio-win image. The cluster must be able to pull it.')}
+                        {t('Optional. Leave empty to use the cluster virtio-win containerDisk (OpenShift Virtualization ConfigMap virtio-win). Do not paste an ISO URL.')}
                       </HelperTextItem>
                     </HelperText>
                   </FormHelperText>
