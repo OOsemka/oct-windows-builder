@@ -119,6 +119,11 @@ func TestInterpretVMINotFound(t *testing.T) {
 	if interpretVMINotFound(http.StatusOK, "Unknown", vmiWaitState{sawRunning: true, notFoundN: 3}) != waitExited {
 		t.Fatal("NotFound after a guest ran must not poll 4h")
 	}
+
+	stale := vmiWaitState{notFoundN: 1}
+	if interpretVMINotFound(http.StatusOK, "Stopped", stale) != waitPoll {
+		t.Fatal("Stopped before seeing Running must be ignored (stale cached event)")
+	}
 }
 
 func TestInstallVMEvictionStrategyNone(t *testing.T) {

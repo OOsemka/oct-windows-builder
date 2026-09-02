@@ -275,7 +275,10 @@ func (m *Manager) run(req StartBuildRequest) {
 	}
 
 	m.set(disk, StatusPending, "Creating install VM")
-	vmCreatedAfter := time.Now()
+	// Truncate to second so the guard matches Kubernetes creationTimestamp
+	// precision. Without this, sub-second difference causes the current
+	// build's own VM/VMI to be rejected as "stale."
+	vmCreatedAfter := time.Now().Truncate(time.Second)
 	if err := m.ensureInstallVM(installName, isoName, sysprepName, req); err != nil {
 		m.set(disk, StatusError, err.Error())
 		return
@@ -488,6 +491,11 @@ func (m *Manager) waitVMI(name string, vmCreatedAfter time.Time) error {
 		last = phase
 		switch phase {
 		case "Succeeded":
+			if !st.sawRunning {
+				logf("ignoring VMI %s Succeeded before seeing Running (likely stale cached event)", name)
+				time.Sleep(5 * time.Second)
+				continue
+			}
 			st.sawSucceeded = true
 			if st.runningSince.IsZero() {
 				st.runningSince = parseK8sTime(nestedString(obj, "metadata", "creationTimestamp"))
@@ -607,7 +615,10 @@ func interpretVMINotFound(vmCode int, printable string, st vmiWaitState) waitAct
 	}
 	switch printable {
 	case "Stopped":
-		return waitExited
+		if st.sawRunning {
+			return waitExited
+		}
+		return waitPoll
 	case "Starting", "Running", "WaitingForVolumeBinding", "Migrating", "Paused", "Stopping", "Provisioning":
 		return waitPoll
 	}

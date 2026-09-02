@@ -157,7 +157,7 @@ function driverPathsXml(folders: string[]): string {
   return lines.join('\n');
 }
 
-function firstLogonCommandsXml(): string {
+function firstLogonCommandsXml(clientEdition: boolean): string {
   let order = 1;
   const cmds: string[] = [];
   const add = (desc: string, cmd: string) => {
@@ -206,6 +206,27 @@ function firstLogonCommandsXml(): string {
     'Remove Sysprep Panther directory',
     'cmd /c if exist C:\\Windows\\System32\\Sysprep\\Panther rd /s /q C:\\Windows\\System32\\Sysprep\\Panther',
   );
+  // Consumer client ISOs (Win10/Win11) ship with Store/UWP apps that lock the
+  // AppRepository. Sysprep generalize fails with 0x80070005 (Access Denied)
+  // from AppxSysprep.dll unless these packages are removed first.
+  if (clientEdition) {
+    add(
+      'Remove user AppX packages that block sysprep on consumer client ISOs',
+      'powershell.exe -ExecutionPolicy Bypass -Command "Get-AppxPackage -AllUsers | Remove-AppxPackage -ErrorAction SilentlyContinue"',
+    );
+    add(
+      'Remove provisioned AppX packages that block sysprep on consumer client ISOs',
+      'powershell.exe -ExecutionPolicy Bypass -Command "Get-AppxProvisionedPackage -Online | Remove-AppxProvisionedPackage -Online -ErrorAction SilentlyContinue"',
+    );
+    // Some consumer packages (e.g. Cortana) are per-user installed but not
+    // provisioned, so Remove-AppxPackage cannot remove them. Sysprep
+    // generalize validation then fails with 0x80073cf2. This registry key
+    // tells AppxSysprep.dll to skip that validation entirely.
+    add(
+      'Skip AppX validation during sysprep (consumer packages like Cortana cannot be fully removed)',
+      'reg add "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Setup\\Sysprep\\Settings\\Microsoft.Windows.AppxSysprep.dll" /v SkipAppxValidation /t REG_DWORD /d 1 /f',
+    );
+  }
   add(
     'Sysprep generalize and shutdown (golden image; no Cloudbase-Init)',
     'cmd /c C:\\Windows\\System32\\Sysprep\\sysprep.exe /generalize /oobe /shutdown /quiet /mode:vm',
@@ -283,8 +304,8 @@ export function recommendedAutounattend(
   const drivers = driverPathsXml(p.virtioFolders);
   const peExtra = p.kind === 'client11' ? win11PeCommands() : p.kind === 'client10' ? win10PeCommands() : '';
   const installFrom = installFromXml(effectiveIndex, p.imageName);
-  const firstLogon = firstLogonCommandsXml();
   const isClientKind = p.kind === 'client10' || p.kind === 'client11';
+  const firstLogon = firstLogonCommandsXml(isClientKind);
   const userData = isClientKind
     ? `      <UserData>
         <ProductKey>
