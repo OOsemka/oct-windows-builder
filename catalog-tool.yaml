@@ -129,3 +129,13 @@ spec:
       openshift: ["4.22"]
       image: quay.io/cjanisze/oct-windows-builder:1.0.9-ocp4.22
       gitRef: v1.0.9
+    - version: "1.0.10"
+      channel: stable
+      openshift: ["4.21"]
+      image: quay.io/cjanisze/oct-windows-builder:1.0.10-ocp4.21
+      gitRef: v1.0.10
+    - version: "1.0.10"
+      channel: stable
+      openshift: ["4.22"]
+      image: quay.io/cjanisze/oct-windows-builder:1.0.10-ocp4.22
+      gitRef: v1.0.10

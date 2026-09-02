@@ -122,6 +122,21 @@ export function profileForSku(skuId: string): AutounattendProfile {
   };
 }
 
+/**
+ * Windows Server 2025 / Win11 24H2 reject virtio storage drivers (viostor/vioscsi)
+ * in PnpCustomizationsWinPE with error 0x80070103 - 0x40031. Known regression:
+ * https://github.com/virtio-win/kvm-guest-drivers-windows/issues/1100
+ * The April 2026 cross-signed driver trust change on Server 2025 compounds this.
+ * Our rootdisk is SATA so WinPE doesn't need viostor; virtio-win-gt-x64.msi in
+ * FirstLogon installs all virtio drivers post-install. Older editions are unaffected.
+ */
+function skipWinPEDrivers(skuId: string): boolean {
+  const n = normalizeSkuKey(skuId);
+  return n === 'win2k25' || n === 'win11' ||
+    n.includes('2k25') || n.includes('2025') ||
+    n.includes('win11');
+}
+
 function driverPathsXml(folders: string[]): string {
   const kinds = ['viostor', 'NetKVM', 'Balloon'];
   let i = 1;
@@ -262,15 +277,19 @@ export function recommendedAutounattend(skuId: string): string {
   const peExtra = p.kind === 'client11' ? win11PeCommands() : p.kind === 'client10' ? win10PeCommands() : '';
   const installFrom = installFromXml(p.imageIndex, p.imageName);
   const firstLogon = firstLogonCommandsXml();
-  return `<?xml version="1.0" encoding="utf-8"?>
-<unattend xmlns="urn:schemas-microsoft-com:unattend">
-  <settings pass="windowsPE">
-    <component name="Microsoft-Windows-PnpCustomizationsWinPE" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
+  const includeWinPEDrivers = !skipWinPEDrivers(p.skuId);
+  const winPEDriverBlock = includeWinPEDrivers
+    ? `    <component name="Microsoft-Windows-PnpCustomizationsWinPE" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State">
       <DriverPaths>
 ${drivers}
       </DriverPaths>
     </component>
-    <component name="Microsoft-Windows-International-Core-WinPE" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+`
+    : '';
+  return `<?xml version="1.0" encoding="utf-8"?>
+<unattend xmlns="urn:schemas-microsoft-com:unattend">
+  <settings pass="windowsPE">
+${winPEDriverBlock}    <component name="Microsoft-Windows-International-Core-WinPE" processorArchitecture="amd64" publicKeyToken="31bf3856ad364e35" language="neutral" versionScope="nonSxS" xmlns:wcm="http://schemas.microsoft.com/WMIConfig/2002/State" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
       <SetupUILanguage>
         <UILanguage>en-US</UILanguage>
       </SetupUILanguage>
