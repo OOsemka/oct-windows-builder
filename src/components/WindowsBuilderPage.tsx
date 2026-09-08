@@ -6,6 +6,7 @@ import {
   useK8sWatchResource,
 } from '@openshift-console/dynamic-plugin-sdk';
 import { useTranslation } from 'react-i18next';
+import { useNavigate } from 'react-router-dom-v5-compat';
 import {
   ActionGroup,
   Alert,
@@ -191,6 +192,7 @@ const WizardSection: FC<WizardSectionProps> = ({ n, title, summary, open, unlock
 
 const WindowsBuilderPageInner: FC = () => {
   const { t } = useTranslation(I18N);
+  const navigate = useNavigate();
 
   const [dvModel, modelsInFlight] = useK8sModel(DV_GVK);
   const [dsModel] = useK8sModel(DS_GVK);
@@ -543,7 +545,7 @@ const WindowsBuilderPageInner: FC = () => {
         : customTemplate.trim() || t('Create a custom template');
 
   const goComputeHub = () => {
-    window.location.href = '/community-tools/compute';
+    navigate('/community-tools/compute');
   };
 
   const reached = (id: StepId) => STEP_ORDER.indexOf(maxStep) >= STEP_ORDER.indexOf(id) && unlock[id];
