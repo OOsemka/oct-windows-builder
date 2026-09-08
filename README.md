@@ -5,7 +5,8 @@
 Standalone OpenShift Console plugin that builds **sysprepped** Windows disks for OpenShift Virtualization. Golden **DataVolumes** use the name OpenShift templates expect (`DATA_SOURCE_NAME`: `win10`, `win11`, `win2k16`, `win2k19`, `win2k22`, `win2k25`, or a custom DNS-1123 name).
 
 - **Plugin ID:** `oct-windows-builder`
-- **Images:** `quay.io/<org>/oct-windows-builder:1.0.9-ocp4.22` / `:1.0.9-ocp4.21` and `quay.io/<org>/oct-windows-builder-builder:1.0.9-ocp4.22` / `:1.0.9-ocp4.21` (`<semver>-ocp<major.minor>`; same digest is OK)
+- **Version:** `1.0.16`
+- **Images:** `quay.io/<org>/oct-windows-builder:1.0.16-ocp4.22` / `:1.0.16-ocp4.21` and `quay.io/<org>/oct-windows-builder-builder:1.0.16-ocp4.22` / `:1.0.16-ocp4.21` (`<semver>-ocp<major.minor>`; same digest is OK)
 - **Route:** `/community-tools/compute/windows-builder` (Community Tools → **Compute**)
 - **Git branch:** `main` / optional `ocp-4.22` when PF/API differ
 
@@ -16,8 +17,21 @@ Validated on OpenShift **4.22** (PatternFly 6). Requires **OpenShift Virtualizat
 ## What it does
 
 1. Live **Windows family tiles** (not a dropdown) from cluster Templates (`windows10-*`, `windows11-*`, `windows2k16-*`, …). Size/workload variants are grouped. Custom DataVolume name is extra.
-2. Progressive form: edition → ISO (optional Microsoft eval URL) → Autounattend for that SKU → template (or DV only) → storage / Start build.
+2. Progressive form: edition → ISO type (eval or consumer for win10/win11; eval only for servers) → optional consumer edition picker (Pro, Home, Education, Pro for Workstations, Pro Education) → Autounattend for that SKU → template (or DV only) → storage / Start build.
 3. **Start build** asks the in-cluster builder to import the ISO, boot a VM, unattended install, sysprep shutdown, clone to the golden DataVolume. Ready means CDI `status.phase=Succeeded`.
+
+### Builder pipeline
+
+`Manager.run`: cleanup → Autounattend ConfigMap → HTTP ISO DataVolume → El Torito EFI patch → blank install DataVolume → install VM → `waitVMI` → delete VM → clone golden DV to `openshift-virtualization-os-images` → DataSource → optional Template → Ready.
+
+### Key features
+
+- **Consumer vs enterprise ISO support** — client SKUs (win10/win11) offer Enterprise Evaluation vs Consumer/Retail. Consumer uses WIM indexes from `CONSUMER_EDITIONS`; server SKUs stay eval-only.
+- **Autounattend.xml generation** — `recommendedAutounattend(skuId, isoType, editionIndex?)` builds unattend with GPT/EFI partitions, `/IMAGE/INDEX`, WinPE virtio drivers, Win11 LabConfig/BypassNRO, and FirstLogon (virtio-gt + qemu-ga + sysprep). No ProductKey on eval XML.
+- **virtio-win** — containerDisk CD on VM; WinPE `DriverPaths` for viostor/NetKVM/Balloon (skipped for win11/win2k25 due to 0x80070103); FirstLogon installs `virtio-win-gt-x64.msi` + `qemu-ga-x86_64.msi`.
+- **AppX cleanup** — all client profiles (win10/win11) remove AppX packages and set `SkipAppxValidation` so sysprep succeeds with leftover Store apps.
+- **VMI watcher / `sawRunning` guard** — `waitVMI` polls up to 4h; `sawRunning` must be true before treating Succeeded/NotFound as exit (prevents stale-VMI races). `evaluateGuestExit` requires qemu-ga connection.
+- **Golden DV cloning** — after sysprep, clone install disk to `openshift-virtualization-os-images`; create/update DataSource and optional Template.
 
 ## Contributing — cluster-portable code
 
@@ -52,7 +66,7 @@ cd builder && go test ./... && go build -o windows-builder .
 
 ## Catalog
 
-After **public** combined tags exist for **both** OpenShift minors (`:1.0.9-ocp4.22` and `:1.0.9-ocp4.21` for the plugin and builder), open a PR against storefront `catalog/community.yaml` using [`catalog-tool.yaml`](catalog-tool.yaml) **including** `spec.versions[]`. Until then the Compute tile may exist without installable versions. Register `catalog/deploy/oct-windows-builder.yaml` in `BUNDLED_DEPLOY`. Always publish both minor tags. Never catalog a (version, OpenShift minor) row unless that exact tag is public.
+After **public** combined tags exist for **both** OpenShift minors (`:1.0.16-ocp4.22` and `:1.0.16-ocp4.21` for the plugin and builder), open a PR against storefront `catalog/community.yaml` using [`catalog-tool.yaml`](catalog-tool.yaml) **including** `spec.versions[]`. Until then the Compute tile may exist without installable versions. Register `catalog/deploy/oct-windows-builder.yaml` in `BUNDLED_DEPLOY`. Always publish both minor tags. Never catalog a (version, OpenShift minor) row unless that exact tag is public.
 
 ## Deploy
 

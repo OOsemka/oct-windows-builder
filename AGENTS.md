@@ -9,14 +9,30 @@ This repository is the **Windows Builder** ConsolePlugin. It is **not** the OCT 
 | | Value |
 | --- | --- |
 | Plugin ID / ConsolePlugin / `package.json` `consolePlugin.name` | **`oct-windows-builder`** |
-| Image | `quay.io/<org>/oct-windows-builder:1.0.10-ocp4.22` (and `:1.0.10-ocp4.21`; `<semver>-ocp<major.minor>`) |
-| Builder image | `quay.io/<org>/oct-windows-builder-builder:1.0.10-ocp4.22` (and `:1.0.10-ocp4.21`) |
+| Image | `quay.io/<org>/oct-windows-builder:1.0.16-ocp4.22` (and `:1.0.16-ocp4.21`; `<semver>-ocp<major.minor>`) |
+| Builder image | `quay.io/<org>/oct-windows-builder-builder:1.0.16-ocp4.22` (and `:1.0.16-ocp4.21`) |
 | i18n | `plugin__oct-windows-builder` |
 | Route | `/community-tools/compute/windows-builder` |
 | Proxy | `/api/proxy/plugin/oct-windows-builder/windows-builder` |
 | CSS prefix | `wb-` |
 
 Display name is **Windows Builder**. Hub is **Compute** (`category: compute`).
+
+**Current version:** `1.0.16` (package.json / consolePlugin.version).
+
+## Supported Windows editions
+
+| `DATA_SOURCE_NAME` | Display name | ISO type |
+| --- | --- | --- |
+| `win2k25` | Windows Server 2025 | eval only |
+| `win2k22` | Windows Server 2022 | eval only |
+| `win2k19` | Windows Server 2019 | eval only |
+| `win2k16` | Windows Server 2016 | eval only |
+| `win11` | Windows 11 | eval or consumer |
+| `win10` | Windows 10 | eval or consumer |
+
+- **Consumer editions** (win10/win11 only): `IsoType = 'eval' | 'consumer'`. Consumer uses WIM indexes from `CONSUMER_EDITIONS` (Pro=6, Home=1, Education=4, Pro for Workstations=10, Pro Education=8). Server SKUs are eval-only.
+- Custom DNS-1123 name also supported.
 
 ## What this plugin owns
 
@@ -40,15 +56,37 @@ Typical flow (see `docs/install-job.md`):
 2. Blank DataVolume for the install disk.
 3. ConfigMap `autounattend.xml` / `Autounattend.xml` (ConfigMap **CD-ROM**, GitOps win2k19 layout). Do not publish `unattend.xml` with the install XML.
 4. VM boots ISO + cluster virtio-win containerDisk + Autounattend.
-5. Unattended setup → FirstLogonCommands run **sysprep /generalize /oobe /shutdown**.
+5. Unattended setup → FirstLogonCommands run **sysprep /generalize /oobe /shutdown /quiet /mode:vm**.
 6. Guest ACPI shutdown **after qemu-guest-agent connected** (FirstLogon installed tools, then sysprep). That is **Ready**. A ~7 minute ACPI with no guest agent is **Error** (unsealed). Clone the disk to DataVolume `win2k19` (etc.) in `openshift-virtualization-os-images`.
 7. Optional Template create/update; DataSource pointing at that PVC.
+
+### Autounattend.xml generation
+
+`recommendedAutounattend(skuId, isoType, editionIndex?)` builds a full unattend from `profileForSku`: GPT/EFI partitions, `/IMAGE/INDEX`, optional WinPE virtio drivers, Win11 LabConfig/BypassNRO, specialize drivers, and FirstLogon (virtio-gt + qemu-ga + sysprep). No ProductKey on recommended eval XML. Consumer ISOs use the selected edition's WIM index instead of the profile default.
+
+### virtio-win driver installation
+
+- **VM:** virtio-win as a SATA `containerDisk` CD. Image from build request or cluster ConfigMap `virtio-win` (`clusterVirtioWinImage`).
+- **WinPE:** `DriverPaths` for viostor/NetKVM/Balloon under D–G × SKU folders (`w10`, `w11`, `2k19`, …); skipped for win11/win2k25 (known 0x80070103).
+- **FirstLogon:** installs `virtio-win-gt-x64.msi` + `qemu-ga-x86_64.msi` on letters D–G.
+
+### AppX cleanup (client editions)
+
+For **all client** profiles (win10/win11, regardless of `isoType`), FirstLogon runs `Get-AppxPackage -AllUsers | Remove-AppxPackage` and `Get-AppxProvisionedPackage -Online | Remove-AppxProvisionedPackage`, then sets `SkipAppxValidation` registry key so sysprep does not fail on leftover Store apps (e.g. Cortana).
+
+### VMI watcher and `sawRunning` guard
+
+`waitVMI` polls the VMI for up to 4h. `vmiWaitState.sawRunning` must become `true` before treating `Succeeded`/NotFound/Stopped as a real exit (avoids stale-VMI races). Stale resources are ignored via `vmCreatedAfter`. `evaluateGuestExit` requires qemu-ga connection when virtio is used — no agent = unsealed = Error.
+
+### Golden DV cloning and DataSource
+
+After sysprep shutdown, the builder clones the install disk to a DataVolume in `openshift-virtualization-os-images` (e.g. `win2k19`). Then creates/updates a `DataSource` pointing at that PVC, and optionally creates/updates an OpenShift Template.
 
 Do **not** mark a DataVolume Ready unless CDI `status.phase` is `Succeeded`.
 
 ## OpenShift and extension versions
 
-Two axes in the catalog: git tag **`v1.x.x`** (semver) and optional branch **`ocp-X.Y`** when PatternFly or APIs diverge. Image tags **always** `<semver>-ocp<major.minor>` (e.g. `1.0.10-ocp4.22`).
+Two axes in the catalog: git tag **`v1.x.x`** (semver) and optional branch **`ocp-X.Y`** when PatternFly or APIs diverge. Image tags **always** `<semver>-ocp<major.minor>` (e.g. `1.0.16-ocp4.22`).
 
 - Git: `main` tracks the newest supported minor (currently **4.22**).
 - PatternFly 6 on 4.22; do not mix PF majors on one branch.
@@ -56,9 +94,9 @@ Two axes in the catalog: git tag **`v1.x.x`** (semver) and optional branch **`oc
 
 **Do not list catalog `versions[].image` until that exact public combined tag exists.**
 
-## Navigation
+## Navigation (React Router v6 via v5-compat)
 
-This plugin **does not** register the Community Tools section or hubs. Open from the storefront **Compute** tile or `/community-tools/compute/windows-builder`.
+This plugin **does not** register the Community Tools section or hubs. Open from the storefront **Compute** tile or `/community-tools/compute/windows-builder`. Uses `useNavigate` from `react-router-dom-v5-compat` (^6.30.0) for in-page navigation.
 
 ## No environment-specific hardcoding
 
