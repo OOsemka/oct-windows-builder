@@ -108,6 +108,16 @@ Allowed product identity: plugin ID/namespace `oct-windows-builder`, CNV namespa
 
 The builder ServiceAccount can get/list/watch/create/update/patch/delete DataVolumes, DataSources, VirtualMachines, VirtualMachineInstances, ConfigMaps, and PersistentVolumeClaims; create `datavolumes/source` (CDI cross-namespace clone; parent `datavolumes` does not imply the subresource); get/list/watch/create/update/patch Templates; get/list StorageClasses; and in `oct-windows-builder` create Jobs/read pods (ISO El Torito patch) plus `datavolumes/source` create in that work namespace. It cannot manage unrelated cluster-scoped resources. Document this in README. Do not log BMC passwords, ISO URL userinfo, Autounattend passwords, or kube tokens.
 
+## Companion images
+
+The deploy bundle (`catalog/deploy/oct-windows-builder.yaml` in the storefront) references a sidecar image with its own independent version. When bumping either image, update both the deploy YAML and this section.
+
+| Image | Current version | Quay repo |
+| --- | --- | --- |
+| `oct-windows-builder-builder` | **1.0.16** | `quay.io/cjanisze/oct-windows-builder-builder` |
+
+The builder version should match the plugin version. After rebuilding either image, update the deploy YAML in the storefront, rebuild the storefront image, and run `scripts/validate-catalog.sh`. See `oct-release-checklist.mdc`.
+
 ## Catalog tile
 
 Storefront `catalog/community.yaml`: `metadata.name: oct-windows-builder`, `consolePlugin: oct-windows-builder`, `spec.href: /community-tools/compute/windows-builder`, `category: compute`, `spec.icon: tiles/oct-windows-builder.svg`. Copy `catalog-tool.yaml` into a storefront PR. **Never catalog a (version, OpenShift minor) row unless that exact combined tag is public.**
