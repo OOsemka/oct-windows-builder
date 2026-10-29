@@ -58,6 +58,31 @@ function Register-ContinueTask {
         /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Local" | Out-Null
 }
 
+# Updates can install or update Store app packages for the signed-in user only.
+# Sysprep generalize then fails with 0x80073cf2 ("installed for a user, but not
+# provisioned for all users"). Remove such packages (never system or framework
+# packages) and skip AppX validation, as the Windows 10/11 answer file does.
+function Clear-AppxForSysprep {
+    $removed = 0
+    try {
+        $provisioned = @(Get-AppxProvisionedPackage -Online | ForEach-Object { $_.DisplayName })
+        foreach ($p in Get-AppxPackage -AllUsers) {
+            if ($p.NonRemovable -or $p.IsFramework -or ($provisioned -contains $p.Name)) { continue }
+            try {
+                Remove-AppxPackage -Package $p.PackageFullName -AllUsers -ErrorAction Stop
+                $removed++
+            } catch {
+                Add-Content -Path $Log -Value ("{0}   could not remove {1}: {2}" -f (Get-Date -Format s), $p.PackageFullName, $_)
+            }
+        }
+    } catch {
+        Write-Status "AppX cleanup error: $_"
+    }
+    reg.exe add 'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Setup\Sysprep\Settings\Microsoft.Windows.AppxSysprep.dll' `
+        /v SkipAppxValidation /t REG_DWORD /d 1 /f | Out-Null
+    Write-Status "removed $removed per-user app package(s) that block sysprep"
+}
+
 function Invoke-Seal {
     $attempt = 1
     if (Test-Path $SealFile) { $attempt = [int](Get-Content $SealFile) + 1 }
@@ -67,6 +92,7 @@ function Invoke-Seal {
         Dism.exe /Online /Cleanup-Image /StartComponentCleanup /Quiet | Out-Null
     }
     Remove-Item -Path $PassFile -Force -ErrorAction SilentlyContinue
+    Clear-AppxForSysprep
     # Never leave the startup task in the image that sysprep seals.
     schtasks.exe /Delete /TN $Task /F 2>$null | Out-Null
     Write-Status "running sysprep (attempt $attempt/$MaxSealAttempts; the VM shuts down when it is done)"
