@@ -547,7 +547,7 @@ func (m *Manager) waitVMI(name string, vmCreatedAfter time.Time) error {
 				}
 				return m.finishGuestWait(name, st, last)
 			case waitMissing:
-				return fmt.Errorf("install VM %s NotFound", name)
+				return fmt.Errorf("install VM %s was deleted before Windows shut down; the disk is not sealed, so nothing was cloned. Re-run Start build", name)
 			}
 			time.Sleep(8 * time.Second)
 			continue
@@ -738,8 +738,11 @@ func interpretVMINotFound(vmCode int, printable string, st vmiWaitState) waitAct
 		return waitExited
 	}
 	if vmCode == http.StatusNotFound {
+		// The builder deletes the install VM only after this wait returns. A VM
+		// that disappears while the guest was running was deleted by someone
+		// else: its disk is not known to be sealed, so never clone it.
 		if st.sawRunning {
-			return waitExited
+			return waitMissing
 		}
 		if st.notFoundN >= 15 {
 			return waitMissing

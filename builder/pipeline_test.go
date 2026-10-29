@@ -207,8 +207,8 @@ func TestInterpretVMINotFound(t *testing.T) {
 	if interpretVMINotFound(http.StatusOK, "Stopped", ran) != waitExited {
 		t.Fatal("Stopped after a running guest must proceed (or Error on uptime), not poll")
 	}
-	if interpretVMINotFound(http.StatusNotFound, "", ran) != waitExited {
-		t.Fatal("VM+VMI NotFound after a running guest must not poll 4h")
+	if interpretVMINotFound(http.StatusNotFound, "", ran) != waitMissing {
+		t.Fatal("VM deleted while the guest ran: fail (never clone an unsealed disk), and do not poll 4h")
 	}
 	if interpretVMINotFound(http.StatusOK, "Starting", ran) != waitPoll {
 		t.Fatal("RerunOnFailure recreating the VMI should keep polling")
