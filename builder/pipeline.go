@@ -891,16 +891,10 @@ func (m *Manager) ensureHTTPDataVolume(name, isoURL, size, sc string) error {
 	})
 }
 
+// ensureBlankDataVolume always recreates the install disk. A disk left by an
+// earlier build is not blank: it holds that build's sealed Windows, and as
+// bootOrder 1 it boots instead of Setup on the ISO.
 func (m *Manager) ensureBlankDataVolume(name, size, sc string) error {
-	path := m.dvPath(m.workNS, name)
-	existing, code, err := m.k8s.Get(path)
-	if err != nil {
-		return err
-	}
-	if existing != nil && code != http.StatusNotFound && dvSucceeded(existing) {
-		logf("reusing blank install DataVolume %s", name)
-		return nil
-	}
 	return m.recreateDV(m.workNS, name, map[string]interface{}{
 		"source":  map[string]interface{}{"blank": map[string]interface{}{}},
 		"storage": storageSpec(size, sc),
@@ -936,7 +930,8 @@ func (m *Manager) ensureInstallVM(vmName, isoName, sysprepName string, req Start
 }
 
 func installVMManifest(ns, vmName, isoName, sysprepName string, req StartBuildRequest) map[string]interface{} {
-	disks := installVMDisks(req.VirtioImage)
+	probe := needsVirtioStorageProbe(req.VirtioImage, req.Autounattend)
+	disks := installVMDisks(req.VirtioImage, probe)
 	volumes := []interface{}{
 		map[string]interface{}{
 			"name":       "rootdisk",
@@ -960,6 +955,12 @@ func installVMManifest(ns, vmName, isoName, sysprepName string, req StartBuildRe
 		"name":      "sysprep",
 		"configMap": map[string]interface{}{"name": sysprepName},
 	})
+	if probe {
+		volumes = append(volumes, map[string]interface{}{
+			"name":      virtioProbeName,
+			"emptyDisk": map[string]interface{}{"capacity": "1Gi"},
+		})
+	}
 
 	return map[string]interface{}{
 		"apiVersion": "kubevirt.io/v1",
@@ -1024,7 +1025,9 @@ func installVMManifest(ns, vmName, isoName, sysprepName string, req StartBuildRe
 // writes Boot Manager — required with EFI noprompt; GitOps BIOS used ISO
 // bootOrder 1 instead). ISO CD bootOrder 2. virtio/answer-file CDs are not bootable.
 // Answer file is a ConfigMap CD like GitOps win2k19 (not a floppy).
-func installVMDisks(virtioImage string) []interface{} {
+//
+// probe adds a small VirtIO disk last (see needsVirtioStorageProbe).
+func installVMDisks(virtioImage string, probe bool) []interface{} {
 	disks := []interface{}{
 		map[string]interface{}{
 			"name":      "rootdisk",
@@ -1043,10 +1046,51 @@ func installVMDisks(virtioImage string) []interface{} {
 			"cdrom": map[string]interface{}{"bus": "sata"},
 		})
 	}
-	return append(disks, map[string]interface{}{
+	disks = append(disks, map[string]interface{}{
 		"name":  "sysprep",
 		"cdrom": map[string]interface{}{"bus": "sata"},
 	})
+	if probe {
+		disks = append(disks, map[string]interface{}{
+			"name": virtioProbeName,
+			"disk": map[string]interface{}{"bus": "virtio"},
+		})
+	}
+	return disks
+}
+
+const virtioProbeName = "virtio-storage-probe"
+
+// needsVirtioStorageProbe reports whether the install VM needs a small VirtIO
+// disk so the golden image can boot from a VirtIO root disk.
+//
+// Windows is installed onto a SATA disk. When WinPE loads viostor
+// (PnpCustomizationsWinPE), Setup carries it into the image as a boot driver.
+// Win11 and Server 2025 skip WinPE drivers (0x80070103), so viostor only
+// arrives with virtio-win-gt-x64.msi at FirstLogon, when no VirtIO disk is
+// attached: the driver is staged but never set up as a boot driver, and a VM
+// with a VirtIO root disk loops on a storage error. With a VirtIO disk attached,
+// Windows binds viostor to it and keeps it as a boot driver through sysprep.
+//
+// Only added when WinPE does not load viostor: WinPE then cannot see the
+// probe, so Setup's DiskID 0 is still the SATA install disk.
+func needsVirtioStorageProbe(virtioImage, autounattend string) bool {
+	if strings.TrimSpace(virtioImage) == "" {
+		return false
+	}
+	return !winPELoadsViostor(autounattend)
+}
+
+func winPELoadsViostor(autounattend string) bool {
+	i := strings.Index(autounattend, "Microsoft-Windows-PnpCustomizationsWinPE")
+	if i < 0 {
+		return false
+	}
+	section := autounattend[i:]
+	if j := strings.Index(section, "</component>"); j >= 0 {
+		section = section[:j]
+	}
+	return strings.Contains(strings.ToLower(section), "viostor")
 }
 
 func (m *Manager) ensureDataSource(ns, name string) error {

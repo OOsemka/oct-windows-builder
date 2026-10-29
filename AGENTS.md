@@ -9,8 +9,8 @@ This repository is the **Windows Builder** ConsolePlugin. It is **not** the OCT 
 | | Value |
 | --- | --- |
 | Plugin ID / ConsolePlugin / `package.json` `consolePlugin.name` | **`oct-windows-builder`** |
-| Image | `quay.io/<org>/oct-windows-builder:1.0.16-ocp4.22` (and `:1.0.16-ocp4.21`; `<semver>-ocp<major.minor>`) |
-| Builder image | `quay.io/<org>/oct-windows-builder-builder:1.0.16-ocp4.22` (and `:1.0.16-ocp4.21`) |
+| Image | `quay.io/<org>/oct-windows-builder:1.0.17-ocp4.22` (and `:1.0.17-ocp4.21`; `<semver>-ocp<major.minor>`) |
+| Builder image | `quay.io/<org>/oct-windows-builder-builder:1.0.17-ocp4.22` (and `:1.0.17-ocp4.21`) |
 | i18n | `plugin__oct-windows-builder` |
 | Route | `/community-tools/compute/windows-builder` |
 | Proxy | `/api/proxy/plugin/oct-windows-builder/windows-builder` |
@@ -18,7 +18,7 @@ This repository is the **Windows Builder** ConsolePlugin. It is **not** the OCT 
 
 Display name is **Windows Builder**. Hub is **Compute** (`category: compute`).
 
-**Current version:** `1.0.16` (package.json / consolePlugin.version).
+**Current version:** `1.0.17` (package.json / consolePlugin.version).
 
 ## Supported Windows editions
 
@@ -74,6 +74,11 @@ Typical flow (see `docs/install-job.md`):
 
 For **all client** profiles (win10/win11, regardless of `isoType`), FirstLogon runs `Get-AppxPackage -AllUsers | Remove-AppxPackage` and `Get-AppxProvisionedPackage -Online | Remove-AppxProvisionedPackage`, then sets `SkipAppxValidation` registry key so sysprep does not fail on leftover Store apps (e.g. Cortana).
 
+### Install disk and VirtIO boot
+
+- The install disk (`wb-install-<disk>`) is **recreated on every build**. A disk left by an earlier build holds that build's sealed Windows and, as bootOrder 1, would boot instead of Setup.
+- Windows is installed onto **SATA**. When WinPE loads viostor (`PnpCustomizationsWinPE`), Setup carries it into the image as a boot driver. Win11 / Server 2025 skip WinPE drivers, so the builder attaches a 1Gi VirtIO `emptyDisk` (`virtio-storage-probe`, last disk, not bootable) when the answer file's WinPE pass has no viostor: virtio-win-gt at FirstLogon then binds viostor to a real VirtIO disk and it stays a boot driver through sysprep, so the golden image boots from SATA **or** VirtIO. The probe is never added when WinPE loads viostor (Setup would see a second disk; `DiskID 0` must stay the SATA install disk).
+
 ### VMI watcher and `sawRunning` guard
 
 `waitVMI` polls the VMI for up to 4h. `vmiWaitState.sawRunning` must become `true` before treating `Succeeded`/NotFound/Stopped as a real exit (avoids stale-VMI races). Stale resources are ignored via `vmCreatedAfter`. `evaluateGuestExit` requires qemu-ga connection when virtio is used — no agent = unsealed = Error.
@@ -86,7 +91,7 @@ Do **not** mark a DataVolume Ready unless CDI `status.phase` is `Succeeded`.
 
 ## OpenShift and extension versions
 
-Two axes in the catalog: git tag **`v1.x.x`** (semver) and optional branch **`ocp-X.Y`** when PatternFly or APIs diverge. Image tags **always** `<semver>-ocp<major.minor>` (e.g. `1.0.16-ocp4.22`).
+Two axes in the catalog: git tag **`v1.x.x`** (semver) and optional branch **`ocp-X.Y`** when PatternFly or APIs diverge. Image tags **always** `<semver>-ocp<major.minor>` (e.g. `1.0.17-ocp4.22`).
 
 - Git: `main` tracks the newest supported minor (currently **4.22**).
 - PatternFly 6 on 4.22; do not mix PF majors on one branch.
@@ -114,7 +119,7 @@ The deploy bundle (`catalog/deploy/oct-windows-builder.yaml` in the storefront) 
 
 | Image | Current version | Quay repo |
 | --- | --- | --- |
-| `oct-windows-builder-builder` | **1.0.16** | `quay.io/cjanisze/oct-windows-builder-builder` |
+| `oct-windows-builder-builder` | **1.0.17** | `quay.io/cjanisze/oct-windows-builder-builder` |
 
 The builder version should match the plugin version. After rebuilding either image, update the deploy YAML in the storefront, rebuild the storefront image, and run `scripts/validate-catalog.sh`. See `oct-release-checklist.mdc`.
 

@@ -8,7 +8,7 @@ import (
 )
 
 func TestInstallVMDisksBootOrder(t *testing.T) {
-	disks := installVMDisks("")
+	disks := installVMDisks("", false)
 	if len(disks) != 3 {
 		t.Fatalf("len=%d", len(disks))
 	}
@@ -26,7 +26,7 @@ func TestInstallVMDisksBootOrder(t *testing.T) {
 	if _, ok := disks[2].(map[string]interface{})["bootOrder"]; ok {
 		t.Fatal("sysprep must not have bootOrder")
 	}
-	withVirtio := installVMDisks("quay.io/example/virtio-win:latest")
+	withVirtio := installVMDisks("quay.io/example/virtio-win:latest", false)
 	if len(withVirtio) != 4 {
 		t.Fatalf("virtio len=%d", len(withVirtio))
 	}
@@ -36,6 +36,53 @@ func TestInstallVMDisksBootOrder(t *testing.T) {
 	}
 	if _, ok := v["bootOrder"]; ok {
 		t.Fatal("virtio must not have bootOrder")
+	}
+}
+
+func TestVirtioStorageProbe(t *testing.T) {
+	winPE := `<settings pass="windowsPE"><component name="Microsoft-Windows-PnpCustomizationsWinPE"><DriverPaths>` +
+		`<PathAndCredentials wcm:action="add" wcm:keyValue="1"><Path>E:\\viostor\\2k22\\amd64</Path></PathAndCredentials>` +
+		`</DriverPaths></component><component name="Microsoft-Windows-Setup"></component></settings>`
+	// Specialize-pass drivers (NonWinPE) mention viostor too; only WinPE counts.
+	noWinPE := `<settings pass="windowsPE"><component name="Microsoft-Windows-Setup"></component></settings>` +
+		`<settings pass="specialize"><component name="Microsoft-Windows-PnpCustomizationsNonWinPE"><DriverPaths>` +
+		`<Path>E:\\viostor\\w11\\amd64</Path></DriverPaths></component></settings>`
+	const img = "quay.io/example/virtio-win:latest"
+	if needsVirtioStorageProbe(img, winPE) {
+		t.Fatal("WinPE loads viostor: no probe (Setup would see a second disk)")
+	}
+	if !needsVirtioStorageProbe(img, noWinPE) {
+		t.Fatal("WinPE skips viostor: probe needed so viostor becomes a boot driver")
+	}
+	if needsVirtioStorageProbe("", noWinPE) {
+		t.Fatal("no virtio-win image: no probe")
+	}
+
+	disks := installVMDisks(img, true)
+	last := disks[len(disks)-1].(map[string]interface{})
+	if last["name"] != virtioProbeName || nestedString(last, "disk", "bus") != "virtio" {
+		t.Fatalf("probe must be the last disk, on virtio: %v", last)
+	}
+	if _, ok := last["bootOrder"]; ok {
+		t.Fatal("probe must not be bootable")
+	}
+	if prev := disks[len(disks)-2].(map[string]interface{}); prev["name"] != "sysprep" {
+		t.Fatalf("CD order must not change: %v", prev)
+	}
+
+	vm := installVMManifest("ns", "wb-install-win11", "wb-iso-win11", "wb-sysprep-win11", StartBuildRequest{
+		VirtioImage: img, Autounattend: noWinPE, Cores: 2, Memory: "8Gi",
+	})
+	vols, _ := nestedMap(vm, "spec", "template", "spec")["volumes"].([]interface{})
+	found := false
+	for _, v := range vols {
+		vm := v.(map[string]interface{})
+		if vm["name"] == virtioProbeName && nestedString(vm, "emptyDisk", "capacity") == "1Gi" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("probe emptyDisk volume missing: %v", vols)
 	}
 }
 
