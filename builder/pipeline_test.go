@@ -103,6 +103,10 @@ func TestSysprepAnswerFiles(t *testing.T) {
 	if _, ok := d["unattend.xml"]; ok {
 		t.Fatal("install Autounattend must not also be published as unattend.xml")
 	}
+	script, _ := d["wb-update.ps1"].(string)
+	if !strings.Contains(script, "Microsoft.Update.Session") || !strings.Contains(script, "sysprep.exe") {
+		t.Fatal("wb-update.ps1 must install updates and then run sysprep")
+	}
 }
 
 func TestEvaluateGuestExit(t *testing.T) {

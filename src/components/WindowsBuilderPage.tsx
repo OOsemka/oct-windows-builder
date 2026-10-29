@@ -13,6 +13,7 @@ import {
   Breadcrumb,
   BreadcrumbItem,
   Button,
+  Checkbox,
   Form,
   FormGroup,
   FormHelperText,
@@ -268,6 +269,7 @@ const WindowsBuilderPageInner: FC = () => {
   const [editionIndex, setEditionIndex] = useState(DEFAULT_CONSUMER_EDITION_INDEX);
   const [xml, setXml] = useState('');
   const [xmlTouched, setXmlTouched] = useState(false);
+  const [windowsUpdate, setWindowsUpdate] = useState(true);
   const [templateAction, setTemplateAction] = useState<TemplateAction>('none');
   const [templateRef, setTemplateRef] = useState('');
   const [customTemplate, setCustomTemplate] = useState('');
@@ -363,8 +365,8 @@ const WindowsBuilderPageInner: FC = () => {
 
   useEffect(() => {
     if (xmlTouched || !sku) return;
-    setXml(recommendedAutounattend(autounattendSku, isoType, isoType === 'consumer' ? editionIndex : undefined));
-  }, [sku, customDisk, xmlTouched, autounattendSku, isoType, editionIndex]);
+    setXml(recommendedAutounattend(autounattendSku, isoType, isoType === 'consumer' ? editionIndex : undefined, windowsUpdate));
+  }, [sku, customDisk, xmlTouched, autounattendSku, isoType, editionIndex, windowsUpdate]);
 
   useEffect(() => {
     if (isoTouched || !sku) return;
@@ -802,12 +804,24 @@ const WindowsBuilderPageInner: FC = () => {
                 done={xmlReady && reached('unattend')}
                 onOpen={() => openStep('unattend')}
               >
+                <Checkbox
+                  id="wb-windows-update"
+                  isChecked={windowsUpdate}
+                  isDisabled={xmlTouched}
+                  onChange={(_e, v) => setWindowsUpdate(v)}
+                  label={t('Install Windows updates before sealing (recommended)')}
+                  description={
+                    xmlTouched
+                      ? t('The XML was edited by hand. Use the recommended XML to change this option.')
+                      : t('Runs Windows Update in the install VM until no updates remain, then sysprep. The build takes longer (often 30–90 minutes more), but VMs from the image start without a long first-boot update. Needs internet access from the install VM.')
+                  }
+                />
                 <FormGroup label={t('Autounattend.xml')} fieldId="wb-xml">
                   <Button
                     variant="link"
                     isInline
                     onClick={() => {
-                      setXml(recommendedAutounattend(autounattendSku, isoType, isoType === 'consumer' ? editionIndex : undefined));
+                      setXml(recommendedAutounattend(autounattendSku, isoType, isoType === 'consumer' ? editionIndex : undefined, windowsUpdate));
                       setXmlTouched(false);
                     }}
                   >

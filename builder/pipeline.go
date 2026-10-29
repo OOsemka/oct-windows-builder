@@ -1,6 +1,7 @@
 package main
 
 import (
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -516,7 +517,7 @@ func (m *Manager) waitVMI(name string, vmCreatedAfter time.Time) error {
 				already := m.builds[disk] != nil && m.builds[disk].Status == StatusSysprep
 				m.mu.Unlock()
 				if !already {
-					m.set(disk, StatusSysprep, "Guest agent connected; waiting for sysprep shutdown")
+					m.set(disk, StatusSysprep, "Guest agent connected; waiting for sysprep shutdown (Windows updates install first if selected)")
 				}
 			}
 		}
@@ -744,12 +745,23 @@ func (m *Manager) ensureSysprepCM(name, xml string) error {
 // Install Autounattend only. Do not also publish unattend.xml — sysprep
 // searches removable media for that name and would re-apply generalize+shutdown
 // on the golden and on every clone. GitOps win2k19 used autounattend.xml for Setup.
+//
+// wb-update.ps1 rides along on the same CD; the answer file only runs it when
+// the build asked for Windows updates before sealing.
 func sysprepAnswerFiles(xml string) map[string]interface{} {
 	return map[string]interface{}{
-		"autounattend.xml": xml,
-		"Autounattend.xml": xml,
+		"autounattend.xml":   xml,
+		"Autounattend.xml":   xml,
+		updateScriptFileName: updateScript,
 	}
 }
+
+const updateScriptFileName = "wb-update.ps1"
+
+// updateScript installs Windows updates in the install VM, then runs sysprep.
+//
+//go:embed wb-update.ps1
+var updateScript string
 
 func isContainerDiskRef(s string) bool {
 	s = strings.TrimSpace(s)

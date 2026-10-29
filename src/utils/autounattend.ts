@@ -157,7 +157,10 @@ function driverPathsXml(folders: string[]): string {
   return lines.join('\n');
 }
 
-function firstLogonCommandsXml(clientEdition: boolean): string {
+/** CD letters searched for the builder's wb-update.ps1 (answer-file CD). */
+const UPDATE_SCRIPT_LETTERS = ['D', 'E', 'F', 'G', 'H'];
+
+function firstLogonCommandsXml(clientEdition: boolean, windowsUpdate: boolean): string {
   let order = 1;
   const cmds: string[] = [];
   const add = (desc: string, cmd: string) => {
@@ -227,10 +230,22 @@ function firstLogonCommandsXml(clientEdition: boolean): string {
       'reg add "HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Setup\\Sysprep\\Settings\\Microsoft.Windows.AppxSysprep.dll" /v SkipAppxValidation /t REG_DWORD /d 1 /f',
     );
   }
-  add(
-    'Sysprep generalize and shutdown (golden image; no Cloudbase-Init)',
-    'cmd /c C:\\Windows\\System32\\Sysprep\\sysprep.exe /generalize /oobe /shutdown /quiet /mode:vm',
-  );
+  const sysprep = 'C:\\Windows\\System32\\Sysprep\\sysprep.exe /generalize /oobe /shutdown /quiet /mode:vm';
+  if (windowsUpdate) {
+    // wb-update.ps1 (from the builder, on the answer-file CD) installs updates,
+    // reboots and continues from a startup task until none remain, then runs
+    // the same sysprep. It never returns while a reboot or sysprep is running.
+    add(
+      'Install Windows updates, then sysprep (wb-update.ps1 on the answer-file CD)',
+      `cmd /c for %d in (${UPDATE_SCRIPT_LETTERS.join(' ')}) do if exist %d:\\wb-update.ps1 powershell.exe -NoProfile -ExecutionPolicy Bypass -File %d:\\wb-update.ps1`,
+    );
+    add(
+      'Sysprep generalize and shutdown if wb-update.ps1 did not run (older builder)',
+      `cmd /c if not exist C:\\Windows\\Setup\\Scripts\\wb-update.started ${sysprep}`,
+    );
+  } else {
+    add('Sysprep generalize and shutdown (golden image; no Cloudbase-Init)', `cmd /c ${sysprep}`);
+  }
   return cmds.join('\n');
 }
 
@@ -296,6 +311,7 @@ export function recommendedAutounattend(
   skuId: string,
   isoType: IsoType = 'eval',
   editionIndex?: number,
+  windowsUpdate = false,
 ): string {
   const p = profileForSku(skuId);
   const effectiveIndex = isoType === 'consumer' && editionIndex !== undefined
@@ -305,7 +321,7 @@ export function recommendedAutounattend(
   const peExtra = p.kind === 'client11' ? win11PeCommands() : p.kind === 'client10' ? win10PeCommands() : '';
   const installFrom = installFromXml(effectiveIndex, p.imageName);
   const isClientKind = p.kind === 'client10' || p.kind === 'client11';
-  const firstLogon = firstLogonCommandsXml(isClientKind);
+  const firstLogon = firstLogonCommandsXml(isClientKind, windowsUpdate);
   const userData = isClientKind
     ? `      <UserData>
         <ProductKey>

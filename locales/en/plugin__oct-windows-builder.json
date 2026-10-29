@@ -68,5 +68,8 @@
   "ISO URL is required.": "ISO URL is required.",
   "Enter a valid DataVolume name.": "Enter a valid DataVolume name.",
   "Loading": "Loading",
-  "default": "default"
+  "default": "default",
+  "Install Windows updates before sealing (recommended)": "Install Windows updates before sealing (recommended)",
+  "Runs Windows Update in the install VM until no updates remain, then sysprep. The build takes longer (often 30–90 minutes more), but VMs from the image start without a long first-boot update. Needs internet access from the install VM.": "Runs Windows Update in the install VM until no updates remain, then sysprep. The build takes longer (often 30–90 minutes more), but VMs from the image start without a long first-boot update. Needs internet access from the install VM.",
+  "The XML was edited by hand. Use the recommended XML to change this option.": "The XML was edited by hand. Use the recommended XML to change this option."
 }
