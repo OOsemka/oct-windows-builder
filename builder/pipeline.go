@@ -596,6 +596,11 @@ func (m *Manager) waitVMI(name string, vmCreatedAfter time.Time) error {
 				}
 				if u := m.guestUpdateStatus(name); u != "" && u != lastUpdate {
 					lastUpdate = u
+					if isGuestUpdateError(u) {
+						// The install VM stays up for inspection; the next build's
+						// preflight cleanup removes it.
+						return fmt.Errorf("Windows: %s", u)
+					}
 					m.set(disk, StatusSysprep, "Windows updates: "+u)
 				}
 			}
@@ -632,6 +637,11 @@ func (m *Manager) guestUpdateStatus(vmName string) string {
 		}
 	}
 	return ""
+}
+
+// isGuestUpdateError: wb-update.ps1 gave up (for example sysprep failed twice).
+func isGuestUpdateError(status string) bool {
+	return strings.HasPrefix(status, "ERROR:")
 }
 
 func lastUpdateStatus(consoleLog string) string {

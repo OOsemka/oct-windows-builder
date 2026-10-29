@@ -92,6 +92,18 @@ func TestLastUpdateStatus(t *testing.T) {
 	if got := lastUpdateStatus(log); got != "pass 1/8: installing 3 update(s)" {
 		t.Fatalf("got %q", got)
 	}
+	if !isGuestUpdateError(lastUpdateStatus("wb-update: ERROR: sysprep failed after 2 attempts: x\r\n")) {
+		t.Fatal("ERROR lines must fail the build")
+	}
+	if isGuestUpdateError("sysprep did not finish (attempt 1/2): x") {
+		t.Fatal("a first sysprep failure is retried, not fatal")
+	}
+	script, _ := sysprepAnswerFiles("<unattend/>")["wb-update.ps1"].(string)
+	del := strings.Index(script, "schtasks.exe /Delete")
+	run := strings.Index(script, "Sysprep\\sysprep.exe")
+	if del < 0 || run < 0 || del > run {
+		t.Fatal("the startup task must be deleted before sysprep runs (never sealed into the image)")
+	}
 	if got := lastUpdateStatus("no progress yet\n"); got != "" {
 		t.Fatalf("got %q", got)
 	}

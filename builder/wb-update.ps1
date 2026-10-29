@@ -12,6 +12,13 @@
 # (COM1) as "wb-update: <message>" lines, which the builder shows as the
 # build status.
 #
+# If sysprep fails (Windows stays up after sysprep.exe exits), the error from
+# setuperr.log goes to the console, the VM reboots once to clear pending
+# operations and sysprep runs again. A second failure is reported as
+# "wb-update: ERROR: ..." and the builder fails the build instead of cloning
+# an unsealed disk. The startup task is removed before every sysprep run, so
+# it never ends up in the golden image.
+#
 # Never returns while a reboot or sysprep is in progress: the next
 # FirstLogonCommand is a guarded fallback sysprep and must not start early.
 
@@ -22,6 +29,8 @@ $Dir = 'C:\Windows\Setup\Scripts'
 $Local = Join-Path $Dir 'wb-update.ps1'
 $Started = Join-Path $Dir 'wb-update.started'
 $PassFile = Join-Path $Dir 'wb-update.pass'
+$SealFile = Join-Path $Dir 'wb-update.seal'
+$MaxSealAttempts = 2
 $Log = 'C:\Windows\Temp\wb-update.log'
 $Task = 'oct-windows-builder-update'
 
@@ -44,14 +53,39 @@ function Test-DefinitionUpdate($Update) {
     return $false
 }
 
+function Register-ContinueTask {
+    schtasks.exe /Create /TN $Task /SC ONSTART /RU SYSTEM /RL HIGHEST /F `
+        /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Local" | Out-Null
+}
+
 function Invoke-Seal {
-    Write-Status 'no updates left; cleaning up the component store'
-    schtasks.exe /Delete /TN $Task /F 2>$null | Out-Null
-    Dism.exe /Online /Cleanup-Image /StartComponentCleanup /Quiet | Out-Null
+    $attempt = 1
+    if (Test-Path $SealFile) { $attempt = [int](Get-Content $SealFile) + 1 }
+    Set-Content -Path $SealFile -Value $attempt
+    if ($attempt -eq 1) {
+        Write-Status 'no updates left; cleaning up the component store'
+        Dism.exe /Online /Cleanup-Image /StartComponentCleanup /Quiet | Out-Null
+    }
     Remove-Item -Path $PassFile -Force -ErrorAction SilentlyContinue
-    Write-Status 'running sysprep (the VM shuts down when it is done)'
+    # Never leave the startup task in the image that sysprep seals.
+    schtasks.exe /Delete /TN $Task /F 2>$null | Out-Null
+    Write-Status "running sysprep (attempt $attempt/$MaxSealAttempts; the VM shuts down when it is done)"
     Start-Process -FilePath 'C:\Windows\System32\Sysprep\sysprep.exe' `
         -ArgumentList '/generalize', '/oobe', '/shutdown', '/quiet', '/mode:vm' -Wait
+    # sysprep.exe has exited: on success Windows is already shutting down.
+    Start-Sleep -Seconds 180
+    $errors = @(Get-Content -Path 'C:\Windows\System32\Sysprep\Panther\setuperr.log' -ErrorAction SilentlyContinue |
+        Select-Object -Last 3 | ForEach-Object { ($_ -replace '\s+', ' ').Trim() })
+    $reason = if ($errors.Count -gt 0) { $errors -join ' | ' } else { 'no setuperr.log entries' }
+    Write-Status "sysprep did not finish (attempt $attempt/$MaxSealAttempts): $reason"
+    if ($attempt -lt $MaxSealAttempts) {
+        Register-ContinueTask
+        Write-Status 'rebooting to clear pending operations, then retrying sysprep'
+        Restart-Computer -Force
+        Start-Sleep -Seconds 3600
+        exit
+    }
+    Write-Status "ERROR: sysprep failed after $MaxSealAttempts attempts: $reason"
     Start-Sleep -Seconds 3600
 }
 
@@ -60,6 +94,12 @@ New-Item -ItemType Directory -Force -Path $Dir | Out-Null
 Set-Content -Path $Started -Value 'started'
 if ($PSCommandPath -and ($PSCommandPath -ne $Local)) {
     Copy-Item -Path $PSCommandPath -Destination $Local -Force
+}
+
+# Rebooted to retry sysprep: no more updates, seal again.
+if (Test-Path $SealFile) {
+    Invoke-Seal
+    exit
 }
 
 $pass = 1
@@ -104,8 +144,7 @@ if ($pass -le $MaxPasses) {
 }
 
 if ($rebootNeeded) {
-    schtasks.exe /Create /TN $Task /SC ONSTART /RU SYSTEM /RL HIGHEST /F `
-        /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File $Local" | Out-Null
+    Register-ContinueTask
     Write-Status "pass $pass/${MaxPasses}: rebooting to finish installing updates"
     Restart-Computer -Force
     Start-Sleep -Seconds 3600
