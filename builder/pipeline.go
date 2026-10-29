@@ -103,6 +103,9 @@ func (m *Manager) Start(req StartBuildRequest) (*BuildRecord, error) {
 		TemplateNamespace: req.TemplateNamespace,
 		GoldenNamespace:   req.GoldenNamespace,
 		VirtioImage:       req.VirtioImage,
+		DiskSize:          req.DiskSize,
+		StorageClassName:  req.StorageClassName,
+		CustomTemplate:    req.CustomTemplate,
 		StartedAt:         nowRFC3339(),
 		UpdatedAt:         nowRFC3339(),
 	}
@@ -212,13 +215,22 @@ func (m *Manager) loadFromCluster() {
 		if err := json.Unmarshal([]byte(s), &rec); err != nil {
 			continue
 		}
-		if rec.Status == StatusInstalling || rec.Status == StatusSysprep || rec.Status == StatusPending {
+		resumable := canResume(rec.Status) && m.installVMExists(rec.DiskName)
+		if resumable {
+			rec.Message = "Builder restarted; resuming (waiting for the install VM)"
+			rec.UpdatedAt = nowRFC3339()
+		} else if rec.Status == StatusInstalling || rec.Status == StatusSysprep || rec.Status == StatusPending {
 			rec.Status = StatusError
 			rec.Message = "Builder restarted while the install was in progress. Re-run Start build."
 			rec.UpdatedAt = nowRFC3339()
 		}
-		m.builds[rec.DiskName] = &rec
-		m.persist(&rec)
+		r := rec
+		m.builds[rec.DiskName] = &r
+		m.persist(&r)
+		if resumable {
+			m.running[rec.DiskName] = true
+			go m.resume(r)
+		}
 	}
 }
 
@@ -284,13 +296,25 @@ func (m *Manager) run(req StartBuildRequest) {
 		m.set(disk, StatusError, err.Error())
 		return
 	}
+	m.mu.Lock()
+	if rec := m.builds[disk]; rec != nil {
+		rec.VMCreatedAt = vmCreatedAfter.UTC().Format(time.RFC3339)
+	}
+	m.mu.Unlock()
 
 	m.set(disk, StatusInstalling, "Windows Setup running (unattended)")
 	if err := m.waitVMI(installName, vmCreatedAfter); err != nil {
 		m.set(disk, StatusError, err.Error())
 		return
 	}
+	m.finishBuild(req)
+}
 
+// finishBuild runs after the install VM shut down sealed: clone the golden
+// disk, point the DataSource at it, update the Template.
+func (m *Manager) finishBuild(req StartBuildRequest) {
+	disk := req.DiskName
+	installName := "wb-install-" + disk
 	m.set(disk, StatusPending, "Install VM shut down after sysprep; cloning golden disk")
 	_ = m.k8s.Delete(fmt.Sprintf("/apis/kubevirt.io/v1/namespaces/%s/virtualmachines/%s", m.workNS, installName))
 
@@ -338,6 +362,57 @@ func (m *Manager) run(req StartBuildRequest) {
 	}
 
 	m.set(disk, StatusReady, "DataVolume "+disk+" Succeeded")
+}
+
+// canResume: builds whose install VM was already created (Installing, or
+// Sysprep / Windows updates) can continue after a builder restart. Earlier
+// steps are quick and are simply re-run.
+func canResume(st BuildStatus) bool {
+	return st == StatusInstalling || st == StatusSysprep
+}
+
+func (m *Manager) installVMExists(disk string) bool {
+	_, code, err := m.k8s.Get(fmt.Sprintf("/apis/kubevirt.io/v1/namespaces/%s/virtualmachines/wb-install-%s", m.workNS, disk))
+	return err == nil && code == http.StatusOK
+}
+
+// resume continues a build whose install VM outlived a builder restart (for
+// example a Windows Builder update during a long Windows Update build): wait
+// for the sysprep shutdown, then clone and update the template as usual.
+func (m *Manager) resume(rec BuildRecord) {
+	defer m.done(rec.DiskName)
+	installName := "wb-install-" + rec.DiskName
+	req := StartBuildRequest{
+		DiskName:          rec.DiskName,
+		GoldenNamespace:   rec.GoldenNamespace,
+		TemplateName:      rec.TemplateName,
+		TemplateNamespace: rec.TemplateNamespace,
+		CustomTemplate:    rec.CustomTemplate,
+		VirtioImage:       rec.VirtioImage,
+		DiskSize:          rec.DiskSize,
+		StorageClassName:  rec.StorageClassName,
+	}
+	// Records written before 1.0.18 lack size and class: use the install disk's.
+	if req.DiskSize == "" || req.StorageClassName == "" {
+		if pvc, _, err := m.k8s.Get(fmt.Sprintf("/api/v1/namespaces/%s/persistentvolumeclaims/%s", m.workNS, installName)); err == nil && pvc != nil {
+			if req.DiskSize == "" {
+				req.DiskSize = nestedString(pvc, "spec", "resources", "requests", "storage")
+			}
+			if req.StorageClassName == "" {
+				req.StorageClassName = nestedString(pvc, "spec", "storageClassName")
+			}
+		}
+	}
+	if req.DiskSize == "" {
+		m.set(rec.DiskName, StatusError, "Builder restarted and could not read the install disk size. Re-run Start build.")
+		return
+	}
+	logf("resuming build %s after builder restart", rec.DiskName)
+	if err := m.waitVMI(installName, parseK8sTime(rec.VMCreatedAt)); err != nil {
+		m.set(rec.DiskName, StatusError, err.Error())
+		return
+	}
+	m.finishBuild(req)
 }
 
 // preflightCleanup removes leftover VMs, VMIs, and virt-launcher pods from a
@@ -428,7 +503,7 @@ func (m *Manager) waitVMI(name string, vmCreatedAfter time.Time) error {
 	vmiPath := fmt.Sprintf("/apis/kubevirt.io/v1/namespaces/%s/virtualmachineinstances/%s", m.workNS, name)
 	vmPath := fmt.Sprintf("/apis/kubevirt.io/v1/namespaces/%s/virtualmachines/%s", m.workNS, name)
 	deadline := time.Now().Add(4 * time.Hour)
-	var last string
+	var last, lastUpdate string
 	var st vmiWaitState
 	for time.Now().Before(deadline) {
 		obj, code, err := m.k8s.Get(vmiPath)
@@ -519,11 +594,55 @@ func (m *Manager) waitVMI(name string, vmCreatedAfter time.Time) error {
 				if !already {
 					m.set(disk, StatusSysprep, "Guest agent connected; waiting for sysprep shutdown (Windows updates install first if selected)")
 				}
+				if u := m.guestUpdateStatus(name); u != "" && u != lastUpdate {
+					lastUpdate = u
+					m.set(disk, StatusSysprep, "Windows updates: "+u)
+				}
 			}
 		}
 		time.Sleep(15 * time.Second)
 	}
 	return fmt.Errorf("timeout waiting for VMI Succeeded (last %s)", last)
+}
+
+// updateStatusPrefix marks wb-update.ps1 progress lines on the serial console.
+const updateStatusPrefix = "wb-update:"
+
+// guestUpdateStatus returns the latest wb-update.ps1 progress line from the
+// install VM's serial console (KubeVirt guest-console-log container), or "".
+func (m *Manager) guestUpdateStatus(vmName string) string {
+	sel := url.QueryEscape("kubevirt.io/domain=" + vmName)
+	podsObj, _, err := m.k8s.Get(fmt.Sprintf("/api/v1/namespaces/%s/pods?labelSelector=%s", m.workNS, sel))
+	if err != nil || podsObj == nil {
+		return ""
+	}
+	items, _ := podsObj["items"].([]interface{})
+	for _, raw := range items {
+		pod, _ := raw.(map[string]interface{})
+		podName := nestedString(pod, "metadata", "name")
+		if podName == "" {
+			continue
+		}
+		b, code, err := m.k8s.GetBytes(fmt.Sprintf("/api/v1/namespaces/%s/pods/%s/log?container=guest-console-log&tailLines=200", m.workNS, podName))
+		if err != nil || code >= 300 {
+			continue
+		}
+		if s := lastUpdateStatus(string(b)); s != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+func lastUpdateStatus(consoleLog string) string {
+	lines := strings.Split(consoleLog, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		l := strings.TrimSpace(strings.ReplaceAll(lines[i], "\r", ""))
+		if j := strings.Index(l, updateStatusPrefix); j >= 0 {
+			return truncate(strings.TrimSpace(l[j+len(updateStatusPrefix):]), 200)
+		}
+	}
+	return ""
 }
 
 func (s *vmiWaitState) observeVMI(obj map[string]interface{}) {
@@ -535,6 +654,9 @@ func (s *vmiWaitState) observeVMI(obj map[string]interface{}) {
 	}
 	if guestOSPresent(obj) {
 		s.sawGuestOS = true
+		// guestOSInfo is only reported by qemu-guest-agent. A builder that
+		// resumes after the guest shut down sees it on the finished VMI.
+		s.sawAgent = true
 	}
 	if t := vmiRunningSince(obj); !t.IsZero() {
 		s.sawRunning = true
@@ -1017,6 +1139,9 @@ func installVMManifest(ns, vmName, isoName, sysprepName string, req StartBuildRe
 								map[string]interface{}{"name": "tablet", "type": "tablet", "bus": "usb"},
 							},
 							"tpm": map[string]interface{}{"persistent": false},
+							// Serial console log (guest-console-log container) carries
+							// wb-update.ps1 progress lines for the build status.
+							"logSerialConsole": true,
 						},
 						"resources": map[string]interface{}{
 							"requests": map[string]interface{}{"memory": req.Memory},

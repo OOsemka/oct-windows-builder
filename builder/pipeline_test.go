@@ -86,6 +86,51 @@ func TestVirtioStorageProbe(t *testing.T) {
 	}
 }
 
+func TestLastUpdateStatus(t *testing.T) {
+	log := "BdsDxe: loading Boot0001\r\nwb-update: pass 1/8: checking for updates\r\n" +
+		"noise\r\nwb-update: pass 1/8: installing 3 update(s)\r\n\r\n"
+	if got := lastUpdateStatus(log); got != "pass 1/8: installing 3 update(s)" {
+		t.Fatalf("got %q", got)
+	}
+	if got := lastUpdateStatus("no progress yet\n"); got != "" {
+		t.Fatalf("got %q", got)
+	}
+	vm := installVMManifest("ns", "wb-install-x", "wb-iso-x", "wb-sysprep-x", StartBuildRequest{Cores: 2, Memory: "8Gi"})
+	dev := nestedMap(vm, "spec", "template", "spec", "domain", "devices")
+	if dev["logSerialConsole"] != true {
+		t.Fatal("install VM must log its serial console (update progress)")
+	}
+}
+
+func TestResumeAfterRestart(t *testing.T) {
+	for st, want := range map[BuildStatus]bool{
+		StatusInstalling: true, StatusSysprep: true,
+		StatusPending: false, StatusReady: false, StatusError: false,
+	} {
+		if canResume(st) != want {
+			t.Fatalf("canResume(%s) = %v", st, !want)
+		}
+	}
+	// A builder that resumes after the guest shut down only sees the finished
+	// VMI: guestOSInfo (from qemu-guest-agent) counts as the agent connecting.
+	var st vmiWaitState
+	st.observeVMI(map[string]interface{}{
+		"status": map[string]interface{}{
+			"phase":       "Succeeded",
+			"guestOSInfo": map[string]interface{}{"id": "mswindows", "name": "Microsoft Windows"},
+			"phaseTransitionTimestamps": []interface{}{
+				map[string]interface{}{"phase": "Running", "phaseTransitionTimestamp": "2026-01-01T00:00:00Z"},
+			},
+		},
+	})
+	if !st.sawAgent || !st.sawRunning {
+		t.Fatalf("resume evidence: %+v", st)
+	}
+	if err := evaluateGuestExit(guestExitEvidence{SawAgent: st.sawAgent, RequireAgent: true, SawSucceeded: true, SawRunning: true}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestRedactAutounattend(t *testing.T) {
 	if got := redactAutounattend("Job started"); got != "Job started" {
 		t.Fatal(got)

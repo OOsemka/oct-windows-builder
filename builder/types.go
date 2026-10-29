@@ -37,8 +37,13 @@ type BuildRecord struct {
 	TemplateNamespace string      `json:"templateNamespace,omitempty"`
 	GoldenNamespace   string      `json:"goldenNamespace,omitempty"`
 	VirtioImage       string      `json:"virtioImage,omitempty"`
-	StartedAt         string      `json:"startedAt,omitempty"`
-	UpdatedAt         string      `json:"updatedAt,omitempty"`
+	// Fields a restarted builder needs to resume a build.
+	DiskSize         string `json:"diskSize,omitempty"`
+	StorageClassName string `json:"storageClassName,omitempty"`
+	CustomTemplate   bool   `json:"customTemplate,omitempty"`
+	VMCreatedAt      string `json:"vmCreatedAt,omitempty"`
+	StartedAt        string `json:"startedAt,omitempty"`
+	UpdatedAt        string `json:"updatedAt,omitempty"`
 }
 
 func nowRFC3339() string {
