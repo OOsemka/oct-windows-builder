@@ -9,8 +9,8 @@ This repository is the **Windows Builder** ConsolePlugin. It is **not** the OCT 
 | | Value |
 | --- | --- |
 | Plugin ID / ConsolePlugin / `package.json` `consolePlugin.name` | **`oct-windows-builder`** |
-| Image | `quay.io/<org>/oct-windows-builder:1.0.18-ocp4.22` (and `:1.0.18-ocp4.21`; `<semver>-ocp<major.minor>`) |
-| Builder image | `quay.io/<org>/oct-windows-builder-builder:1.0.18-ocp4.22` (and `:1.0.18-ocp4.21`) |
+| Image | `quay.io/<org>/oct-windows-builder:1.0.19-ocp4.22` (and `:1.0.19-ocp4.21`; `<semver>-ocp<major.minor>`) |
+| Builder image | `quay.io/<org>/oct-windows-builder-builder:1.0.19-ocp4.22` (and `:1.0.19-ocp4.21`) |
 | i18n | `plugin__oct-windows-builder` |
 | Route | `/community-tools/compute/windows-builder` |
 | Proxy | `/api/proxy/plugin/oct-windows-builder/windows-builder` |
@@ -18,7 +18,7 @@ This repository is the **Windows Builder** ConsolePlugin. It is **not** the OCT 
 
 Display name is **Windows Builder**. Hub is **Compute** (`category: compute`).
 
-**Current version:** `1.0.18` (package.json / consolePlugin.version).
+**Current version:** `1.0.19` (package.json / consolePlugin.version).
 
 ## Supported Windows editions
 
@@ -83,6 +83,10 @@ For **all client** profiles (win10/win11, regardless of `isoType`), FirstLogon r
 
 With the option on, FirstLogon runs `wb-update.ps1` (embedded in the builder, published on the answer-file CD). It installs software updates through the Windows Update API, reboots only when Windows requires it (startup task `oct-windows-builder-update`, at most 8 passes), cleans up the component store, then runs sysprep. If Windows is still up 3 minutes after `sysprep.exe` exits, it logs `setuperr.log`, reboots once and retries; a second failure is reported as `wb-update: ERROR: ...` and the builder fails the build (never clones an unsealed disk). The startup task is deleted before every sysprep run so it is never sealed into the golden image. Progress lines (`wb-update: ...`) go to COM1; the builder reads the install VM's `guest-console-log` sidecar (an **init container**) and shows the latest line as the build status. The builder resumes a build whose install VM is still running after a builder restart (e.g. a Windows Builder update).
 
+### Cancel
+
+`POST /api/v1/builds/{disk}/cancel` (wizard: Builds list, Cancel with confirmation) stops a running build at its next check, deletes the install VM and install disk, and deletes the ISO import unless it finished (kept for the next build). Status `Cancelled` is final: later updates from the build's goroutine are ignored. Refused (409) while the golden disk is being cloned, because the previous golden disk is already replaced then.
+
 ### VMI watcher and `sawRunning` guard
 
 `waitVMI` polls the VMI for up to 4h. `vmiWaitState.sawRunning` must become `true` before treating `Succeeded`/NotFound/Stopped as a real exit (avoids stale-VMI races). Stale resources are ignored via `vmCreatedAfter`. `evaluateGuestExit` requires qemu-ga connection when virtio is used — no agent = unsealed = Error.
@@ -95,7 +99,7 @@ Do **not** mark a DataVolume Ready unless CDI `status.phase` is `Succeeded`.
 
 ## OpenShift and extension versions
 
-Two axes in the catalog: git tag **`v1.x.x`** (semver) and optional branch **`ocp-X.Y`** when PatternFly or APIs diverge. Image tags **always** `<semver>-ocp<major.minor>` (e.g. `1.0.18-ocp4.22`).
+Two axes in the catalog: git tag **`v1.x.x`** (semver) and optional branch **`ocp-X.Y`** when PatternFly or APIs diverge. Image tags **always** `<semver>-ocp<major.minor>` (e.g. `1.0.19-ocp4.22`).
 
 - Git: `main` tracks the newest supported minor (currently **4.22**).
 - PatternFly 6 on 4.22; do not mix PF majors on one branch.
@@ -123,7 +127,7 @@ The deploy bundle (`catalog/deploy/oct-windows-builder.yaml` in the storefront) 
 
 | Image | Current version | Quay repo |
 | --- | --- | --- |
-| `oct-windows-builder-builder` | **1.0.18** | `quay.io/cjanisze/oct-windows-builder-builder` |
+| `oct-windows-builder-builder` | **1.0.19** | `quay.io/cjanisze/oct-windows-builder-builder` |
 
 The builder version should match the plugin version. After rebuilding either image, update the deploy YAML in the storefront, rebuild the storefront image, and run `scripts/validate-catalog.sh`. See `oct-release-checklist.mdc`.
 
