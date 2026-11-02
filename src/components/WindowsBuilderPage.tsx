@@ -29,12 +29,21 @@ import {
   StackItem,
   TextArea,
   TextInput,
+  Title,
 } from '@patternfly/react-core';
 import { Table, Thead, Tr, Th, Tbody, Td } from '@patternfly/react-table';
 import React, { Component, ErrorInfo, FC, ReactNode, useCallback, useEffect, useMemo, useState } from 'react';
 
 import { recommendedAutounattend } from '../utils/autounattend';
-import { builderHealth, BuildRecord, clusterVirtioWinImage, listBuilds, startBuild } from '../utils/builder-api';
+import {
+  builderHealth,
+  BuildRecord,
+  cancelBuild,
+  clusterVirtioWinImage,
+  isActiveBuild,
+  listBuilds,
+  startBuild,
+} from '../utils/builder-api';
 import {
   DataVolumeKind,
   DataVolumeModel,
@@ -277,6 +286,9 @@ const WindowsBuilderPageInner: FC = () => {
   const [virtioPrefill, setVirtioPrefill] = useState(false);
   const [scPrefill, setScPrefill] = useState(false);
   const [builds, setBuilds] = useState<BuildRecord[]>([]);
+  const [cancelConfirm, setCancelConfirm] = useState('');
+  const [cancelling, setCancelling] = useState('');
+  const [cancelError, setCancelError] = useState('');
   const [builderUp, setBuilderUp] = useState<boolean | null>(null);
   const [saving, setSaving] = useState(false);
   const [status, setStatus] = useState<{ variant: 'success' | 'danger'; msg: string } | null>(null);
@@ -440,9 +452,28 @@ const WindowsBuilderPageInner: FC = () => {
   }, [refreshBuilds]);
 
   useEffect(() => {
-    const busy = builds.some((b) => b.status === 'Installing' || b.status === 'Sysprep' || b.status === 'Pending');
+    const busy = builds.some((b) => isActiveBuild(b.status));
     if (busy) setDisksOpen(true);
   }, [builds]);
+
+  const onCancelBuild = async (diskName: string) => {
+    setCancelling(diskName);
+    setCancelError('');
+    try {
+      await cancelBuild(diskName);
+      setCancelConfirm('');
+      await refreshBuilds();
+    } catch (err) {
+      setCancelError(getK8sErrorMessage(err));
+    } finally {
+      setCancelling('');
+    }
+  };
+
+  const sortedBuilds = useMemo(
+    () => [...builds].sort((a, b) => (b.startedAt || '').localeCompare(a.startedAt || '')),
+    [builds],
+  );
 
   const onSku = (next: string) => {
     setSku(next);
@@ -1010,6 +1041,61 @@ const WindowsBuilderPageInner: FC = () => {
               </WizardSection>
             </Form>
           </StackItem>
+
+          {sortedBuilds.length > 0 ? (
+            <StackItem>
+              <Title headingLevel="h2" size="md">{t('Builds')}</Title>
+              {cancelError ? <Alert variant="danger" isInline title={t('Could not cancel the build')}>{cancelError}</Alert> : null}
+              <Table variant="compact" aria-label={t('Builds')}>
+                <Thead>
+                  <Tr>
+                    <Th>{t('Disk')}</Th>
+                    <Th>{t('Status')}</Th>
+                    <Th>{t('Progress')}</Th>
+                    <Th>{t('Started')}</Th>
+                    <Th screenReaderText={t('Actions')} />
+                  </Tr>
+                </Thead>
+                <Tbody>
+                  {sortedBuilds.map((b) => (
+                    <Tr key={b.diskName}>
+                      <Td dataLabel={t('Disk')}>{b.diskName}</Td>
+                      <Td dataLabel={t('Status')}>
+                        <Label color={statusLabelColor(b.status)}>{t(b.status)}</Label>
+                      </Td>
+                      <Td dataLabel={t('Progress')}>{b.message || '—'}</Td>
+                      <Td dataLabel={t('Started')}>{b.startedAt ? new Date(b.startedAt).toLocaleString() : '—'}</Td>
+                      <Td dataLabel={t('Actions')} isActionCell>
+                        {isActiveBuild(b.status) ? (
+                          cancelConfirm === b.diskName ? (
+                            <span className="wb-cancel-confirm">
+                              {t('Cancel this build? The install VM and unfinished disks are deleted.')}{' '}
+                              <Button
+                                variant="danger"
+                                size="sm"
+                                onClick={() => void onCancelBuild(b.diskName)}
+                                isLoading={cancelling === b.diskName}
+                                isDisabled={cancelling === b.diskName}
+                              >
+                                {t('Cancel build')}
+                              </Button>{' '}
+                              <Button variant="link" size="sm" onClick={() => setCancelConfirm('')} isDisabled={cancelling === b.diskName}>
+                                {t('Keep running')}
+                              </Button>
+                            </span>
+                          ) : (
+                            <Button variant="secondary" size="sm" onClick={() => setCancelConfirm(b.diskName)}>
+                              {t('Cancel')}
+                            </Button>
+                          )
+                        ) : null}
+                      </Td>
+                    </Tr>
+                  ))}
+                </Tbody>
+              </Table>
+            </StackItem>
+          ) : null}
 
           <StackItem>
             <div className="wb-disks">

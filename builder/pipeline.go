@@ -19,6 +19,10 @@ type Manager struct {
 	mu                sync.Mutex
 	builds            map[string]*BuildRecord
 	running           map[string]bool
+	// cancelled: Cancel was called; the build's goroutine stops at its next check.
+	cancelled map[string]bool
+	// finishing: cloning the golden disk / updating the template; too late to cancel.
+	finishing map[string]bool
 }
 
 func NewManager(k8s *K8sClient, workNS, goldenNS, templateNS string) *Manager {
@@ -29,6 +33,8 @@ func NewManager(k8s *K8sClient, workNS, goldenNS, templateNS string) *Manager {
 		defaultTemplateNS: templateNS,
 		builds:            map[string]*BuildRecord{},
 		running:           map[string]bool{},
+		cancelled:         map[string]bool{},
+		finishing:         map[string]bool{},
 	}
 	m.loadFromCluster()
 	return m
@@ -120,6 +126,11 @@ func (m *Manager) Start(req StartBuildRequest) (*BuildRecord, error) {
 
 func (m *Manager) set(disk string, st BuildStatus, msg string) {
 	m.mu.Lock()
+	if m.cancelled[disk] && st != StatusCancelled {
+		// The build's goroutine may still be unwinding; Cancelled stays final.
+		m.mu.Unlock()
+		return
+	}
 	rec := m.builds[disk]
 	if rec == nil {
 		rec = &BuildRecord{DiskName: disk}
@@ -138,6 +149,51 @@ func (m *Manager) done(disk string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.running, disk)
+	delete(m.cancelled, disk)
+	delete(m.finishing, disk)
+}
+
+func (m *Manager) stopped(disk string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.cancelled[disk]
+}
+
+var (
+	errNotRunning = fmt.Errorf("no build is running for this disk")
+	errFinishing  = fmt.Errorf("the build is cloning the golden disk and will finish in moments; it can no longer be cancelled")
+)
+
+// Cancel stops a running build and removes its install VM and disks. A
+// finished ISO import is kept for the next build. Refused once the build is
+// cloning the golden disk: the previous golden disk is already replaced then.
+func (m *Manager) Cancel(disk string) (*BuildRecord, error) {
+	m.mu.Lock()
+	switch {
+	case !m.running[disk]:
+		m.mu.Unlock()
+		return nil, errNotRunning
+	case m.finishing[disk]:
+		m.mu.Unlock()
+		return nil, errFinishing
+	}
+	m.cancelled[disk] = true
+	m.mu.Unlock()
+	logf("cancelling build %s", disk)
+
+	installName := "wb-install-" + disk
+	isoName := "wb-iso-" + disk
+	_ = m.k8s.Delete(fmt.Sprintf("/apis/kubevirt.io/v1/namespaces/%s/virtualmachines/%s", m.workNS, installName))
+	_ = m.k8s.Delete(fmt.Sprintf("/apis/kubevirt.io/v1/namespaces/%s/virtualmachineinstances/%s", m.workNS, installName))
+	_ = m.k8s.Delete(m.dvPath(m.workNS, installName))
+	if iso, code, err := m.k8s.Get(m.dvPath(m.workNS, isoName)); err == nil && code != http.StatusNotFound && !dvSucceeded(iso) {
+		_ = m.k8s.Delete(m.dvPath(m.workNS, isoName))
+	}
+	m.set(disk, StatusCancelled, "Cancelled; install VM and unfinished disks removed")
+	m.mu.Lock()
+	rec := *m.builds[disk]
+	m.mu.Unlock()
+	return &rec, nil
 }
 
 func (m *Manager) persist(rec *BuildRecord) {
@@ -260,7 +316,8 @@ func (m *Manager) run(req StartBuildRequest) {
 		m.set(disk, StatusError, err.Error())
 		return
 	}
-	if _, err := waitPhase(m.k8s, m.dvPath(m.workNS, isoName), "Succeeded", 2*time.Hour, []string{"Failed"}); err != nil {
+	stop := func() bool { return m.stopped(disk) }
+	if _, err := waitPhaseUntil(m.k8s, m.dvPath(m.workNS, isoName), "Succeeded", 2*time.Hour, []string{"Failed"}, stop); err != nil {
 		m.set(disk, StatusError, "ISO DataVolume: "+err.Error())
 		return
 	}
@@ -282,11 +339,17 @@ func (m *Manager) run(req StartBuildRequest) {
 		m.set(disk, StatusError, err.Error())
 		return
 	}
-	if _, err := waitPhase(m.k8s, m.dvPath(m.workNS, installName), "Succeeded", 30*time.Minute, []string{"Failed"}); err != nil {
+	if m.stopped(disk) {
+		return
+	}
+	if _, err := waitPhaseUntil(m.k8s, m.dvPath(m.workNS, installName), "Succeeded", 30*time.Minute, []string{"Failed"}, stop); err != nil {
 		m.set(disk, StatusError, "Install DataVolume: "+err.Error())
 		return
 	}
 
+	if m.stopped(disk) {
+		return
+	}
 	m.set(disk, StatusPending, "Creating install VM")
 	// Truncate to second so the guard matches Kubernetes creationTimestamp
 	// precision. Without this, sub-second difference causes the current
@@ -307,6 +370,9 @@ func (m *Manager) run(req StartBuildRequest) {
 		m.set(disk, StatusError, err.Error())
 		return
 	}
+	if m.stopped(disk) {
+		return
+	}
 	m.finishBuild(req)
 }
 
@@ -314,6 +380,13 @@ func (m *Manager) run(req StartBuildRequest) {
 // disk, point the DataSource at it, update the Template.
 func (m *Manager) finishBuild(req StartBuildRequest) {
 	disk := req.DiskName
+	m.mu.Lock()
+	if m.cancelled[disk] {
+		m.mu.Unlock()
+		return
+	}
+	m.finishing[disk] = true
+	m.mu.Unlock()
 	installName := "wb-install-" + disk
 	m.set(disk, StatusPending, "Install VM shut down after sysprep; cloning golden disk")
 	_ = m.k8s.Delete(fmt.Sprintf("/apis/kubevirt.io/v1/namespaces/%s/virtualmachines/%s", m.workNS, installName))
@@ -412,6 +485,9 @@ func (m *Manager) resume(rec BuildRecord) {
 		m.set(rec.DiskName, StatusError, err.Error())
 		return
 	}
+	if m.stopped(rec.DiskName) {
+		return
+	}
 	m.finishBuild(req)
 }
 
@@ -505,7 +581,11 @@ func (m *Manager) waitVMI(name string, vmCreatedAfter time.Time) error {
 	deadline := time.Now().Add(4 * time.Hour)
 	var last, lastUpdate string
 	var st vmiWaitState
+	disk := strings.TrimPrefix(name, "wb-install-")
 	for time.Now().Before(deadline) {
+		if m.stopped(disk) {
+			return errCancelled
+		}
 		obj, code, err := m.k8s.Get(vmiPath)
 		if err != nil {
 			return err
@@ -587,7 +667,6 @@ func (m *Manager) waitVMI(name string, vmCreatedAfter time.Time) error {
 				}
 			}
 			if st.sawAgent {
-				disk := strings.TrimPrefix(name, "wb-install-")
 				m.mu.Lock()
 				already := m.builds[disk] != nil && m.builds[disk].Status == StatusSysprep
 				m.mu.Unlock()

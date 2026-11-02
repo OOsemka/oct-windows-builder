@@ -193,9 +193,20 @@ func nestedString(obj map[string]interface{}, keys ...string) string {
 }
 
 func waitPhase(c *K8sClient, path, want string, timeout time.Duration, failed []string) (string, error) {
+	return waitPhaseUntil(c, path, want, timeout, failed, nil)
+}
+
+// errCancelled stops a build's wait loops after Cancel.
+var errCancelled = fmt.Errorf("build cancelled")
+
+// waitPhaseUntil is waitPhase that also returns errCancelled once stop() is true.
+func waitPhaseUntil(c *K8sClient, path, want string, timeout time.Duration, failed []string, stop func() bool) (string, error) {
 	deadline := time.Now().Add(timeout)
 	var last string
 	for time.Now().Before(deadline) {
+		if stop != nil && stop() {
+			return last, errCancelled
+		}
 		obj, code, err := c.Get(path)
 		if err != nil {
 			return last, err

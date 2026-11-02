@@ -71,5 +71,17 @@
   "default": "default",
   "Install Windows updates before sealing (recommended)": "Install Windows updates before sealing (recommended)",
   "Runs Windows Update in the install VM until no updates remain, then sysprep. The build takes longer (often 30–90 minutes more), but VMs from the image start without a long first-boot update. Needs internet access from the install VM.": "Runs Windows Update in the install VM until no updates remain, then sysprep. The build takes longer (often 30–90 minutes more), but VMs from the image start without a long first-boot update. Needs internet access from the install VM.",
-  "The XML was edited by hand. Use the recommended XML to change this option.": "The XML was edited by hand. Use the recommended XML to change this option."
+  "The XML was edited by hand. Use the recommended XML to change this option.": "The XML was edited by hand. Use the recommended XML to change this option.",
+  "Builds": "Builds",
+  "Could not cancel the build": "Could not cancel the build",
+  "Disk": "Disk",
+  "Status": "Status",
+  "Progress": "Progress",
+  "Started": "Started",
+  "Actions": "Actions",
+  "Cancel this build? The install VM and unfinished disks are deleted.": "Cancel this build? The install VM and unfinished disks are deleted.",
+  "Cancel build": "Cancel build",
+  "Keep running": "Keep running",
+  "Cancel": "Cancel",
+  "Cancelled": "Cancelled"
 }

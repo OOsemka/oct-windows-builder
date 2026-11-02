@@ -48,6 +48,10 @@ func (m *Manager) handleVirtioWin(w http.ResponseWriter, r *http.Request) {
 func (m *Manager) handleGetBuild(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimPrefix(r.URL.Path, "/api/v1/builds/")
 	name = strings.Trim(name, "/")
+	if strings.HasSuffix(name, "/cancel") {
+		m.handleCancelBuild(w, r, strings.TrimSuffix(name, "/cancel"))
+		return
+	}
 	if name == "" {
 		http.NotFound(w, r)
 		return
@@ -60,6 +64,23 @@ func (m *Manager) handleGetBuild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, rec)
+}
+
+// handleCancelBuild: POST /api/v1/builds/{disk}/cancel
+func (m *Manager) handleCancelBuild(w http.ResponseWriter, r *http.Request, disk string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	rec, err := m.Cancel(disk)
+	switch err {
+	case nil:
+		writeJSON(w, http.StatusOK, rec)
+	case errNotRunning, errFinishing:
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+	default:
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
 }
 
 func writeJSON(w http.ResponseWriter, code int, v interface{}) {

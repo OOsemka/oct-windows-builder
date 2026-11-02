@@ -1,6 +1,9 @@
 export const BUILDER_PROXY = '/api/proxy/plugin/oct-windows-builder/windows-builder';
 
-export type BuildUiStatus = 'Pending' | 'Installing' | 'Sysprep' | 'Ready' | 'Error';
+export type BuildUiStatus = 'Pending' | 'Installing' | 'Sysprep' | 'Ready' | 'Error' | 'Cancelled';
+
+/** Builds the builder is still working on (can be cancelled). */
+export const isActiveBuild = (s: BuildUiStatus): boolean => s === 'Pending' || s === 'Installing' || s === 'Sysprep';
 
 export type BuildRecord = {
   diskName: string;
@@ -90,6 +93,16 @@ export async function startBuild(req: StartBuildRequest): Promise<BuildRecord> {
     throw new Error(await readError(res));
   }
   return readJson<BuildRecord>(res, { diskName: req.diskName, status: 'Pending', message: '' });
+}
+
+/** Stops a running build; the builder removes its install VM and unfinished disks. */
+export async function cancelBuild(diskName: string): Promise<BuildRecord> {
+  const path = `/api/v1/builds/${encodeURIComponent(diskName)}/cancel`;
+  const res = requireResponse(await fetch(`${BUILDER_PROXY}${path}`, { method: 'POST' }), `POST ${path}`);
+  if (!res.ok) {
+    throw new Error(await readError(res));
+  }
+  return readJson<BuildRecord>(res, { diskName, status: 'Cancelled', message: '' });
 }
 
 export async function clusterVirtioWinImage(): Promise<string> {

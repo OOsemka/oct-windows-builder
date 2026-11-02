@@ -10,6 +10,7 @@ const (
 	StatusSysprep    BuildStatus = "Sysprep"
 	StatusReady      BuildStatus = "Ready"
 	StatusError      BuildStatus = "Error"
+	StatusCancelled  BuildStatus = "Cancelled"
 )
 
 type StartBuildRequest struct {

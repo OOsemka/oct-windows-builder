@@ -143,6 +143,35 @@ func TestResumeAfterRestart(t *testing.T) {
 	}
 }
 
+func TestCancelRules(t *testing.T) {
+	m := NewManager(nil, "ns", "golden", "openshift")
+	if _, err := m.Cancel("win11"); err != errNotRunning {
+		t.Fatalf("cancel without a running build: %v", err)
+	}
+	m.running["win11"] = true
+	m.finishing["win11"] = true
+	if _, err := m.Cancel("win11"); err != errFinishing {
+		t.Fatalf("cancel while cloning the golden disk: %v", err)
+	}
+
+	// Once cancelled, the build goroutine's later status updates are ignored.
+	m2 := NewManager(nil, "ns", "golden", "openshift")
+	m2.set("win2k22", StatusInstalling, "Windows Setup running")
+	m2.cancelled["win2k22"] = true
+	m2.set("win2k22", StatusCancelled, "Cancelled")
+	m2.set("win2k22", StatusError, "install VM was deleted")
+	if got := m2.builds["win2k22"]; got.Status != StatusCancelled {
+		t.Fatalf("Cancelled must stay final, got %s", got.Status)
+	}
+	if !m2.stopped("win2k22") {
+		t.Fatal("stopped() must report the cancellation")
+	}
+	m2.done("win2k22")
+	if m2.stopped("win2k22") {
+		t.Fatal("done() must clear the cancellation for the next build")
+	}
+}
+
 func TestRedactAutounattend(t *testing.T) {
 	if got := redactAutounattend("Job started"); got != "Job started" {
 		t.Fatal(got)
