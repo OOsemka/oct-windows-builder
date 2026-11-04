@@ -33,7 +33,9 @@ Validated on OpenShift **4.22** (PatternFly 6). Requires **OpenShift Virtualizat
 - **VMI watcher / `sawRunning` guard** — `waitVMI` polls up to 4h; `sawRunning` must be true before treating Succeeded/NotFound as exit (prevents stale-VMI races). `evaluateGuestExit` requires qemu-ga connection.
 - **Golden DV cloning** — after sysprep, clone install disk to `openshift-virtualization-os-images`; create/update DataSource and optional Template.
 
-## Contributing — cluster-portable code
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md): setup, `yarn verify`, testing on your own cluster, the project rules and what maintainers do at release.
 
 Do **not** hardcode environment-specific values (StorageClass names, ISO URLs, VLANs, cluster domains). Storage: omit `storageClassName` or pick a live class in the form. Agents: `.cursor/rules/oct-no-env-hardcoding.mdc`.
 
