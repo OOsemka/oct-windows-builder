@@ -147,8 +147,10 @@ Import from `@patternfly/react-core` ^6. Do **not** import PatternFly CSS. Prefi
 
 ```bash
 yarn install
-yarn build
+yarn verify   # ts-check, check-i18n, check-repo, build (same as CI)
 cd builder && go test ./... && go build -o windows-builder .
 ```
+
+`yarn check-i18n --fix` adds missing translation keys. Contributor workflow and the maintainer-only release steps: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 Do not `oc apply` or push images unless asked.

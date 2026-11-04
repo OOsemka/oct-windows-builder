@@ -83,5 +83,14 @@
   "Cancel build": "Cancel build",
   "Keep running": "Keep running",
   "Cancel": "Cancel",
-  "Cancelled": "Cancelled"
+  "Cancelled": "Cancelled",
+  "ISO type": "ISO type",
+  "Enterprise Evaluation": "Enterprise Evaluation",
+  "Free evaluation ISO from Microsoft. No product key required.": "Free evaluation ISO from Microsoft. No product key required.",
+  "Consumer / Retail": "Consumer / Retail",
+  "Multi-edition ISO from microsoft.com. Select an edition below.": "Multi-edition ISO from microsoft.com. Select an edition below.",
+  "Windows edition": "Windows edition",
+  "Standard consumer ISO edition. Pro is recommended for general use.": "Standard consumer ISO edition. Pro is recommended for general use.",
+  "Paste the consumer ISO URL. The cluster must be able to pull this URL over HTTPS.": "Paste the consumer ISO URL. The cluster must be able to pull this URL over HTTPS.",
+  "Microsoft Software Download": "Microsoft Software Download"
 }
